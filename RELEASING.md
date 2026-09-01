@@ -83,14 +83,15 @@ Tauri boot path (`desktop/src-tauri`):
 - Bundle identifier `xyz.block.buzz.app`
 - Production keyring `buzz-desktop` (not `buzz-desktop-dev`)
 - Relay `ws://localhost:3300` (not `:3000`)
-- Owner public-key pin must be the complete 64-hex key or a `sha256:` digest.
-  Display prefix `ea840b3e` is not a boundary. The in-tree profile does not
-  invent this key; set `BUZZ_DESKTOP_OWNER_PUBKEY` or
-  `BUZZ_DESKTOP_OWNER_PUBKEY_SHA256`. Missing pin fails closed.
+- Owner public-key pin must be the complete 64-hex key or a `sha256:` digest
+  compiled into `.release/local-dev-production.json`. Display prefix
+  `ea840b3e` is not a boundary. The in-tree profile does not invent this key
+  and must not ship empty pins as if pinned. Missing pin fails closed.
+  Finder-launched signed apps do not inherit worker env vars.
 - First-launch generate is refused while the profile is active
-  (`BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1`).
-- Desktop remains optional to `buzz_transport`. Transport is not failed solely
-  because Desktop is absent. Desktop requires the relay, not the reverse.
+  (`BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1` at compile time).
+- Desktop is optional to `buzz_transport`. Transport is required by Desktop.
+  Transport is not failed solely because Desktop is absent.
 
 ```sh
 just release-desktop-local-dev-package /var/tmp/buzz-desktop-releases
@@ -104,10 +105,11 @@ Verification recomputes that digest. Rollback authenticates the target tree
 proof rather than trusting mutable pointer files.
 
 A Linux host cannot produce a signed, notarized `Buzz.app`. Source packages
-record leftover `mac-packaged-app-build`. Live admission requires the signed
-`.app` SHA-256 from a Mac worker. A boolean `true` is not proof. See
-`.release/LEFTOVER-mac-packaged-app-build.md`. Do not install or start Buzz.app
-from this flow.
+record leftover `mac-packaged-app-build`. A boolean `true` or a bare SHA-256
+is not proof of signed/notarized. Leftover stays `needed` until structured
+codesign identity, Team ID, notarization/stapling, and artifact digest exist.
+See `.release/LEFTOVER-mac-packaged-app-build.md`. Do not install or start
+Buzz.app from this flow.
 
 ### Relay
 

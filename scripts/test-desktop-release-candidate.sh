@@ -175,15 +175,17 @@ live = json.loads((base / "live" / "manifest.json").read_text())
 assert manifest["artifacts"]["macos_app"] is None
 assert manifest["leftovers"][0]["id"] == "mac-packaged-app-build"
 assert manifest["leftovers"][0]["status"] == "needed"
-assert manifest["buzz_transport"] == "optional"
+assert manifest["buzz_transport"] == "optional-to-transport"
 assert manifest["desktop_requires_relay"] is True
 assert manifest["transport_requires_desktop"] is False
 assert manifest["relay_ws_url"] == "ws://localhost:3300"
 assert manifest["keyring_service"] == "buzz-desktop"
 assert manifest["owner_pin"]["status"] == "exact"
 assert "nsec" not in json.dumps(manifest)
-assert live["leftovers"][0]["status"] == "satisfied"
+assert live["leftovers"][0]["status"] == "needed"
 assert live["artifacts"]["macos_app"]["sha256"].startswith("sha256:")
+assert live["artifacts"]["macos_app"]["signed"] is False
+assert live["artifacts"]["macos_app"]["notarized"] is False
 PY
 
   unpinned=$(mktemp -d)

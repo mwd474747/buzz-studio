@@ -16,9 +16,11 @@ admission pins. A signed, notarized `Buzz.app` with identifier
 signing credentials.
 
 A Boolean `admit_macos_app_artifact(true)` is **not** proof of a signed app.
-Live-package admission requires the SHA-256 of the signed `.app` as a Mac
-leftover output. Publication is write-once: the digest directory must not
-already exist.
+A bare SHA-256 is also **not** codesign or notarization evidence. `signed`
+and `notarized` stay false, and leftover `mac-packaged-app-build` stays
+`needed`, until a Mac worker supplies structured codesign identity, Team ID,
+notarization/stapling evidence, **and** the artifact digest. Publication is
+write-once: the digest directory must not already exist.
 
 ## Worker inputs
 
@@ -26,24 +28,26 @@ already exist.
 - Complete clean source-tree digest recomputed by `scripts/desktop_release.py`
 - Profile pins: `.release/local-dev-production.json`
 - Production compile env (Mac worker only; do not apply to a live running app):
-  - `BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1`
+  - `BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1` (compile-time profile activation)
   - `BUZZ_RELAY_URL=ws://localhost:3300`
-  - Owner pin via `BUZZ_DESKTOP_OWNER_PUBKEY` or
-    `BUZZ_DESKTOP_OWNER_PUBKEY_SHA256` (64-hex public key or `sha256:` digest).
-    The in-tree profile does not invent this key.
+  - Owner pin must already be the compiled-in `.release/local-dev-production.json`
+    64-hex public key or `sha256:` digest. Env vars are not a Finder-launched
+    pin. The in-tree profile does not invent this key; empty pins fail closed.
 
 ## Worker outputs
 
 1. Content-addressed release directory written **outside** the source checkout
    and **outside** any DawsOS `reports` / `ops` tree.
-2. `artifacts.macos_app.sha256` set to `sha256:<64 hex>` of the signed `.app`.
-3. Leftover `mac-packaged-app-build` status flipped to `satisfied`.
+2. `artifacts.macos_app.sha256` plus codesign identity, Team ID, and
+   notarization/stapling evidence. Digest alone leaves leftover `needed`.
+3. Leftover `mac-packaged-app-build` status `satisfied` only when that
+   structured evidence is present.
 4. Write-once publication (fail if that digest directory already exists).
 
 ## Explicit non-goals
 
-- Desktop remains optional to `buzz_transport`. Transport is not failed solely
-  because Desktop is absent. Desktop requires the relay, not the reverse.
+- Desktop is optional to `buzz_transport`. Transport is required by Desktop.
+  Transport is not failed solely because Desktop is absent.
 - No pairing.rs edits.
 - No live `#local-dev` private key material in the tree or logs.
 - Display prefix `ea840b3e` is not an identity boundary.

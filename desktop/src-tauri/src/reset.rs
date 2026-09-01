@@ -37,6 +37,7 @@ pub(crate) fn sentinel_path(app_data_dir: &Path) -> PathBuf {
 /// Atomically write the sentinel file. Content is intentionally empty —
 /// existence is the signal.
 pub(crate) fn write_sentinel(app_data_dir: &Path) -> Result<(), String> {
+    crate::local_dev_production::deny_identity_erasing_reset()?;
     let path = sentinel_path(app_data_dir);
     std::fs::write(&path, b"").map_err(|e| format!("write sentinel {}: {e}", path.display()))
 }
@@ -114,6 +115,17 @@ pub(crate) fn run_boot_reset(app_data_dir: &Path) -> ResetOutcome {
     if !check_sentinel(app_data_dir) {
         return ResetOutcome::default();
     }
+    if crate::local_dev_production::deny_identity_erasing_reset().is_err() {
+        eprintln!(
+            "buzz-desktop reset: local-dev production profile refuses to erase \
+             the owner identity (no remint)"
+        );
+        let _ = delete_sentinel(app_data_dir);
+        return ResetOutcome {
+            completed: false,
+            failed: false,
+        };
+    }
 
     let is_dev = app_data_dir
         .file_name()
@@ -167,6 +179,17 @@ fn rename_to_trash(src: &Path) -> Result<PathBuf, String> {
 /// Core wipe logic — separated for testing.
 pub(crate) fn run_boot_reset_with_keychain(ctx: ResetContext<'_>) -> ResetOutcome {
     let app_data_dir = ctx.app_data_dir;
+    if crate::local_dev_production::deny_identity_erasing_reset().is_err() {
+        eprintln!(
+            "buzz-desktop reset: local-dev production profile refuses to erase \
+             the owner identity (no remint)"
+        );
+        let _ = delete_sentinel(app_data_dir);
+        return ResetOutcome {
+            completed: false,
+            failed: false,
+        };
+    }
 
     // ── Step 1: rename app-data dir (atomic — sentinel survives the parent) ──
     let trash_app = trash_path(app_data_dir);
@@ -863,5 +886,24 @@ mod tests {
         let trash_legacy = app_support.join("xyz.block.sprout.app.reset-trash");
         assert!(!trash_app.exists(), "app trash must be cleaned");
         assert!(!trash_legacy.exists(), "legacy trash must be cleaned");
+    }
+
+    #[test]
+    fn production_profile_reset_does_not_erase_owner() {
+        use crate::local_dev_production::{fixture_owner_hex, fixture_profile, with_test_profile};
+
+        let tmp = TempDir::new().unwrap();
+        let app_data = make_app_data(&tmp);
+        write_sentinel(&app_data).unwrap();
+        let kc = FakeKeychain::ok();
+        let outcome = with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
+            assert!(write_sentinel(&app_data).is_err());
+            run_boot_reset_with_keychain(make_ctx(&app_data, &kc, false))
+        });
+        assert!(!outcome.completed);
+        assert!(!outcome.failed);
+        assert_eq!(kc.delete_calls.get(), 0);
+        assert!(app_data.exists());
+        assert!(!check_sentinel(&app_data));
     }
 }

@@ -1,9 +1,7 @@
 use super::*;
-
 fn assert_key_eq(a: &Keys, b: &Keys) {
     assert_eq!(a.public_key().to_hex(), b.public_key().to_hex());
 }
-
 /// `BUZZ_PRIVATE_KEY` is process-global; serialize the env-mutating tests
 /// so they don't race each other under the parallel test runner.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1415,73 +1413,5 @@ fn corrupt_keyring_no_marker_no_file_generates_fresh() {
         "a fresh key must be stored in the keyring or the file after generate_and_persist"
     );
 }
-
-#[test]
-fn local_dev_production_refuses_first_launch_generate() {
-    use crate::local_dev_production::{fixture_owner_hex, fixture_profile, with_test_profile};
-
-    let dir = tempfile::tempdir().unwrap();
-    let legacy_path = dir.path().join("identity.key");
-    let store = FakeIdentityStore::reachable_but_empty();
-    let err = with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-        resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap_err()
-    });
-    assert!(
-        err.contains("refuses first-launch generate"),
-        "unexpected error: {err}"
-    );
-    assert!(!legacy_path.exists());
-}
-
-#[test]
-fn local_dev_production_recovers_exact_owner_and_refuses_wrong_identity() {
-    use crate::local_dev_production::{fixture_owner_hex, fixture_profile, with_test_profile};
-
-    let owner = Keys::generate();
-    let owner_hex = owner.public_key().to_hex();
-    let nsec = owner.secret_key().to_bech32().unwrap();
-    // Fixture pin is ea840b3e… — a generated key will not match, which is the
-    // wrong-identity case. Recovery of a matching pin uses the fixture hex
-    // only as the required pin, not as a minted live key.
-    let dir = tempfile::tempdir().unwrap();
-    let legacy_path = dir.path().join("identity.key");
-    let store = FakeIdentityStore::present_with(&nsec);
-    let err = with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-        resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap_err()
-    });
-    assert!(
-        err.contains("does not exactly match")
-            || err.contains("WrongIdentity")
-            || err.contains("display"),
-        "unexpected error: {err}"
-    );
-    assert_ne!(owner_hex, fixture_owner_hex());
-}
-
-#[test]
-fn local_dev_production_locked_keychain_fails_closed() {
-    use crate::local_dev_production::{fixture_owner_hex, fixture_profile, with_test_profile};
-
-    let dir = tempfile::tempdir().unwrap();
-    let legacy_path = dir.path().join("identity.key");
-    write_migration_marker(&migration_marker_path(dir.path())).unwrap();
-    let store = FakeIdentityStore::unreachable();
-    let err = with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-        resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap_err()
-    });
-    assert!(
-        err.contains("locked or unreachable"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn local_dev_production_forces_production_keyring_service() {
-    use crate::local_dev_production::{
-        fixture_owner_hex, fixture_profile, with_test_profile, PRODUCTION_KEYRING_SERVICE,
-    };
-
-    with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-        assert_eq!(keyring_service(), PRODUCTION_KEYRING_SERVICE);
-    });
-}
+#[path = "local_dev_production_boot_tests.rs"]
+mod local_dev_production_boot_tests;

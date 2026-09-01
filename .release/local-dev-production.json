@@ -7,8 +7,10 @@
   "owner_display_prefix": "ea840b3e",
   "owner_pubkey": null,
   "owner_pubkey_sha256": null,
+  "owner_pin_required": true,
   "frontend_dist": "../dist",
-  "buzz_transport": "optional",
+  "buzz_transport": "optional-to-transport",
+  "desktop_requires_relay": true,
   "state_root": {
     "macos": "${HOME}/Library/Application Support/xyz.block.buzz.app",
     "linux_test": "${XDG_STATE_HOME:-${HOME}/.local/state}/xyz.block.buzz.app"

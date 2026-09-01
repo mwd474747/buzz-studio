@@ -7,8 +7,9 @@
 //!
 //! The in-tree profile (`.release/local-dev-production.json`) does **not**
 //! invent the canonical owner public key. Display prefix `ea840b3e` is for
-//! display only. Boot and live admission require a complete 64-hex pin or a
-//! SHA-256 digest supplied by config/env.
+//! display only. The verified 64-hex owner public key or its digest must be
+//! compiled into that JSON; env vars are not a Finder-launched pin. Empty
+//! production pins fail closed.
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ pub const PRODUCTION_RELAY_WS_URL: &str = "ws://localhost:3300";
 pub const OWNER_DISPLAY_PREFIX: &str = "ea840b3e";
 pub const FRONTEND_DIST: &str = "../dist";
 pub const MAC_PACKAGED_APP_BUILD_LEFTOVER: &str = "mac-packaged-app-build";
+pub const BUZZ_TRANSPORT: &str = "optional-to-transport";
 
 const PUBKEY_HEX_LEN: usize = 64;
 
@@ -35,8 +37,10 @@ pub struct LocalDevProductionProfile {
     pub owner_display_prefix: String,
     pub owner_pubkey: Option<String>,
     pub owner_pubkey_sha256: Option<String>,
+    pub owner_pin_required: bool,
     pub frontend_dist: String,
     pub buzz_transport: String,
+    pub desktop_requires_relay: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +113,16 @@ impl Verdict {
     }
 }
 
+/// Structured macOS signing evidence. A bare SHA-256 is not this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacosAppEvidence {
+    pub artifact_digest: String,
+    pub codesign_identity: Option<String>,
+    pub team_id: Option<String>,
+    pub notarization: Option<String>,
+    pub stapled: bool,
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_OVERRIDE: std::cell::RefCell<Option<LocalDevProductionProfile>> =
@@ -136,26 +150,13 @@ pub fn load_in_tree_profile() -> Result<LocalDevProductionProfile, String> {
     parse_profile_json(PROFILE_JSON)
 }
 
+/// Compiled-in profile only. Env vars are not a Finder-launched pin.
 pub fn active_profile() -> Result<LocalDevProductionProfile, String> {
     #[cfg(test)]
     if let Some(profile) = TEST_OVERRIDE.with(|slot| slot.borrow().clone()) {
         return Ok(profile);
     }
-    let mut profile = load_in_tree_profile()?;
-    if let Some(pubkey) = env_nonempty("BUZZ_DESKTOP_OWNER_PUBKEY") {
-        profile.owner_pubkey = Some(normalize_owner_pubkey(&pubkey)?);
-    }
-    if let Some(digest) = env_nonempty("BUZZ_DESKTOP_OWNER_PUBKEY_SHA256") {
-        profile.owner_pubkey_sha256 = Some(normalize_digest(&digest)?);
-    }
-    Ok(profile)
-}
-
-fn env_nonempty(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    load_in_tree_profile()
 }
 
 fn parse_profile_json(raw: &str) -> Result<LocalDevProductionProfile, String> {
@@ -167,6 +168,12 @@ fn parse_profile_json(raw: &str) -> Result<LocalDevProductionProfile, String> {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .ok_or_else(|| format!("local-dev production profile missing {key}"))
+    };
+    let get_bool = |key: &str| -> Result<bool, String> {
+        value
+            .get(key)
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| format!("local-dev production profile missing boolean {key}"))
     };
     let optional_pin = |key: &str| -> Result<Option<String>, String> {
         match value.get(key) {
@@ -186,8 +193,10 @@ fn parse_profile_json(raw: &str) -> Result<LocalDevProductionProfile, String> {
         owner_display_prefix: get_str("owner_display_prefix")?,
         owner_pubkey: optional_pin("owner_pubkey")?,
         owner_pubkey_sha256: optional_pin("owner_pubkey_sha256")?,
+        owner_pin_required: get_bool("owner_pin_required")?,
         frontend_dist: get_str("frontend_dist")?,
         buzz_transport: get_str("buzz_transport")?,
+        desktop_requires_relay: get_bool("desktop_requires_relay")?,
     })
 }
 
@@ -210,12 +219,17 @@ fn normalize_digest(raw: &str) -> Result<String, String> {
     Ok(format!("sha256:{hex}"))
 }
 
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 /// SHA-256 of the 32-byte x-only public key. Used when the full key is pinned
 /// by digest rather than by embedding the hex in-tree.
 pub fn owner_pubkey_digest(pubkey_hex: &str) -> Result<String, String> {
     let hex = normalize_owner_pubkey(pubkey_hex)?;
     let bytes = hex::decode(&hex).map_err(|e| format!("owner pubkey hex: {e}"))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(&bytes)))
+    let digest = Sha256::digest(&bytes);
+    Ok(format!("sha256:{}", hex::encode(digest)))
 }
 
 pub fn display_prefix(pubkey_hex: &str) -> String {
@@ -236,6 +250,13 @@ fn resolved_owner_pin(
         None => None,
         Some(raw) => Some(normalize_digest(raw)?),
     };
+    if profile.owner_pin_required && pubkey.is_none() && digest.is_none() {
+        return Err(
+            "local-dev production profile pin is required and is absent \
+             (do not invent a key; do not treat an empty JSON pin as pinned)"
+                .to_string(),
+        );
+    }
     if pubkey.is_none() && digest.is_none() {
         return Err("local-dev production profile has no owner public-key pin \
              (set owner_pubkey or owner_pubkey_sha256; do not invent a key)"
@@ -384,19 +405,34 @@ pub fn admit_bundle_identifier(identifier: &str) -> Verdict {
     }
 }
 
-pub fn admit_relay(configured: &str, probe: RelayProbe) -> Verdict {
-    if configured != PRODUCTION_RELAY_WS_URL {
-        return Verdict::Deny {
+/// Configuration admission for the pinned relay. This is not a health probe.
+pub fn admit_relay_configuration(configured: &str) -> Verdict {
+    if configured == PRODUCTION_RELAY_WS_URL {
+        Verdict::Accept {
+            reason: format!(
+                "relay configuration admits pinned {PRODUCTION_RELAY_WS_URL} \
+                 (not a health check)"
+            ),
+        }
+    } else {
+        Verdict::Deny {
             case: DenyCase::RelayMismatch,
             reason: format!(
                 "relay {configured:?} is not the pinned production relay \
                  {PRODUCTION_RELAY_WS_URL} (no fallback to :3000)"
             ),
-        };
+        }
+    }
+}
+
+pub fn admit_relay(configured: &str, probe: RelayProbe) -> Verdict {
+    let configuration = admit_relay_configuration(configured);
+    if !configuration.is_accept() {
+        return configuration;
     }
     match probe {
         RelayProbe::Available => Verdict::Accept {
-            reason: format!("relay {PRODUCTION_RELAY_WS_URL} is available"),
+            reason: format!("relay {PRODUCTION_RELAY_WS_URL} probe reported available"),
         },
         RelayProbe::Unavailable => Verdict::Deny {
             case: DenyCase::RelayUnavailable,
@@ -427,12 +463,11 @@ pub fn admit_frontend_embed(frontend_dist: Option<&str>, dev_url_active: bool) -
     }
 }
 
-/// Desktop requires the relay. Transport must not be marked failed solely
-/// because Desktop is absent.
+/// Desktop is optional to buzz_transport. Transport is required by Desktop.
 pub fn admit_transport(observation: TransportObservation) -> Verdict {
     match observation {
         TransportObservation::Ready => Verdict::Accept {
-            reason: "buzz_transport is optional; Desktop absence is not a transport failure"
+            reason: "Desktop is optional to buzz_transport; transport is required by Desktop"
                 .to_string(),
         },
         TransportObservation::Failed { reason } => Verdict::Deny {
@@ -447,25 +482,41 @@ pub fn admit_transport(observation: TransportObservation) -> Verdict {
     }
 }
 
-pub fn admit_macos_app_artifact(signed_app_sha256: Option<&str>) -> Verdict {
-    match signed_app_sha256 {
-        Some(digest) => match normalize_digest(digest) {
-            Ok(_) => Verdict::Accept {
-                reason: "signed macOS .app hash is present".to_string(),
-            },
-            Err(reason) => Verdict::Deny {
-                case: DenyCase::MacAppUnproven,
-                reason,
-            },
-        },
-        None => Verdict::Deny {
+pub fn admit_macos_app_artifact(evidence: Option<&MacosAppEvidence>) -> Verdict {
+    let Some(evidence) = evidence else {
+        return Verdict::Deny {
             case: DenyCase::MacAppUnproven,
             reason: format!(
-                "signed macOS .app hash is required to admit a live package; \
-                 leftover {MAC_PACKAGED_APP_BUILD_LEFTOVER} is unsatisfied \
-                 (a boolean true is not proof)"
+                "signed macOS .app requires codesign identity, Team ID, \
+                 notarization/stapling evidence, and artifact digest; \
+                 leftover {MAC_PACKAGED_APP_BUILD_LEFTOVER} stays unsatisfied \
+                 (a boolean or bare SHA-256 is not proof)"
             ),
-        },
+        };
+    };
+    if normalize_digest(&evidence.artifact_digest).is_err() {
+        return Verdict::Deny {
+            case: DenyCase::MacAppUnproven,
+            reason: "macos .app artifact digest must be sha256:<64 hex>".to_string(),
+        };
+    }
+    let identity = nonempty(evidence.codesign_identity.as_deref());
+    let team_id = nonempty(evidence.team_id.as_deref());
+    let notarization = nonempty(evidence.notarization.as_deref());
+    if identity.is_none() || team_id.is_none() || notarization.is_none() || !evidence.stapled {
+        return Verdict::Deny {
+            case: DenyCase::MacAppUnproven,
+            reason: format!(
+                "SHA-256 is not codesign/notarization evidence; leftover \
+                 {MAC_PACKAGED_APP_BUILD_LEFTOVER} remains until codesign \
+                 identity, Team ID, notarization/stapling, and artifact digest \
+                 are all present"
+            ),
+        };
+    }
+    Verdict::Accept {
+        reason: "macos .app has structured codesign, Team ID, notarization, stapling, and digest"
+            .to_string(),
     }
 }
 
@@ -550,11 +601,19 @@ pub fn admit_runtime_path(checkout: &Path, candidate: &Path, kind: RuntimePathKi
 }
 
 /// Boot-time admission after identity resolution. Fail closed; never print nsec.
+/// Relay check is configuration admission, not a health probe.
 pub fn admit_boot_identity(pubkey_hex: &str) -> Result<(), String> {
     if !profile_active() {
         return Ok(());
     }
     let profile = active_profile()?;
+    if !profile.desktop_requires_relay || profile.buzz_transport != BUZZ_TRANSPORT {
+        return Err(
+            "local-dev production profile must keep Desktop optional to \
+             buzz_transport and require the relay"
+                .to_string(),
+        );
+    }
     admit_owner_pin(&profile).into_result()?;
     admit_identity(
         &profile,
@@ -565,7 +624,34 @@ pub fn admit_boot_identity(pubkey_hex: &str) -> Result<(), String> {
     .into_result()?;
     admit_keyring_service(PRODUCTION_KEYRING_SERVICE).into_result()?;
     admit_bundle_identifier(&profile.bundle_identifier).into_result()?;
-    admit_relay(&profile.relay_ws_url, RelayProbe::Available).into_result()
+    admit_relay_configuration(&profile.relay_ws_url).into_result()
+}
+
+/// Workspace apply must not accept an arbitrary relay or nsec.
+pub fn admit_workspace_apply(
+    relay_url: &str,
+    imported_pubkey_hex: Option<&str>,
+) -> Result<(), String> {
+    if !profile_active() {
+        return Ok(());
+    }
+    let profile = active_profile()?;
+    admit_owner_pin(&profile).into_result()?;
+    admit_relay_configuration(relay_url).into_result()?;
+    if let Some(hex) = imported_pubkey_hex {
+        pubkey_matches_pin(&profile, hex).into_result()?;
+    }
+    Ok(())
+}
+
+/// Import must match the owner pin before any persist.
+pub fn admit_imported_identity(pubkey_hex: &str) -> Result<(), String> {
+    if !profile_active() {
+        return Ok(());
+    }
+    let profile = active_profile()?;
+    admit_owner_pin(&profile).into_result()?;
+    pubkey_matches_pin(&profile, pubkey_hex).into_result()
 }
 
 pub fn deny_first_launch_generate() -> Result<(), String> {
@@ -600,6 +686,18 @@ pub fn deny_locked_or_lost(locked: bool, lost: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Production reset must not erase the owner and then refuse remint.
+pub fn deny_identity_erasing_reset() -> Result<(), String> {
+    if !profile_active() {
+        return Ok(());
+    }
+    Err(
+        "local-dev production profile refuses reset that would erase the \
+         owner identity (no remint)"
+            .to_string(),
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn with_test_profile<T>(profile: LocalDevProductionProfile, f: impl FnOnce() -> T) -> T {
     TEST_OVERRIDE.with(|slot| {
@@ -612,6 +710,7 @@ pub(crate) fn with_test_profile<T>(profile: LocalDevProductionProfile, f: impl F
     result
 }
 
+/// Labeled test fixture — not the live `#local-dev` owner and not minted.
 #[cfg(test)]
 pub(crate) fn fixture_owner_hex() -> String {
     format!("{OWNER_DISPLAY_PREFIX}{}", "ab".repeat(28))
@@ -630,251 +729,13 @@ pub(crate) fn fixture_profile(
         owner_display_prefix: OWNER_DISPLAY_PREFIX.to_string(),
         owner_pubkey: owner,
         owner_pubkey_sha256: digest,
+        owner_pin_required: true,
         frontend_dist: FRONTEND_DIST.to_string(),
-        buzz_transport: "optional".to_string(),
+        buzz_transport: BUZZ_TRANSPORT.to_string(),
+        desktop_requires_relay: true,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn other_hex() -> String {
-        format!("ffff0000{}", "cd".repeat(28))
-    }
-
-    #[test]
-    fn in_tree_profile_does_not_invent_an_owner_key() {
-        let profile = load_in_tree_profile().expect("in-tree profile must parse");
-        assert_eq!(profile.profile, "local-dev-production");
-        assert_eq!(profile.bundle_identifier, BUNDLE_IDENTIFIER);
-        assert_eq!(profile.keyring_service, PRODUCTION_KEYRING_SERVICE);
-        assert_eq!(profile.relay_ws_url, PRODUCTION_RELAY_WS_URL);
-        assert_eq!(profile.owner_display_prefix, OWNER_DISPLAY_PREFIX);
-        assert_eq!(profile.frontend_dist, FRONTEND_DIST);
-        assert_eq!(profile.buzz_transport, "optional");
-        assert!(profile.owner_pubkey.is_none());
-        assert!(profile.owner_pubkey_sha256.is_none());
-        assert_eq!(
-            admit_owner_pin(&profile).deny_case(),
-            Some(DenyCase::OwnerPinMissing)
-        );
-    }
-
-    #[test]
-    fn missing_owner_pin_fails_closed() {
-        let profile = fixture_profile(None, None);
-        let verdict = admit_identity(
-            &profile,
-            &IdentityClass::RecoveredExisting {
-                pubkey_hex: fixture_owner_hex(),
-            },
-        );
-        assert_eq!(verdict.deny_case(), Some(DenyCase::OwnerPinMissing));
-    }
-
-    #[test]
-    fn first_launch_generate_is_denied() {
-        let profile = fixture_profile(Some(fixture_owner_hex()), None);
-        let verdict = admit_identity(
-            &profile,
-            &IdentityClass::GeneratedFresh {
-                pubkey_hex: fixture_owner_hex(),
-            },
-        );
-        assert_eq!(verdict.deny_case(), Some(DenyCase::FirstLaunchGenerate));
-    }
-
-    #[test]
-    fn recovered_owner_requires_exact_64_hex_match() {
-        let profile = fixture_profile(Some(fixture_owner_hex()), None);
-        assert!(admit_identity(
-            &profile,
-            &IdentityClass::RecoveredExisting {
-                pubkey_hex: fixture_owner_hex(),
-            },
-        )
-        .is_accept());
-        // Prefix alone is not a boundary.
-        let prefix_only = format!("{OWNER_DISPLAY_PREFIX}{}", "00".repeat(28));
-        assert_eq!(
-            admit_identity(
-                &profile,
-                &IdentityClass::RecoveredExisting {
-                    pubkey_hex: prefix_only,
-                },
-            )
-            .deny_case(),
-            Some(DenyCase::WrongIdentity)
-        );
-        assert_eq!(
-            admit_identity(
-                &profile,
-                &IdentityClass::MigratedExisting {
-                    pubkey_hex: other_hex(),
-                },
-            )
-            .deny_case(),
-            Some(DenyCase::WrongIdentity)
-        );
-    }
-
-    #[test]
-    fn digest_pin_matches_complete_key_not_prefix() {
-        let owner = fixture_owner_hex();
-        let digest = owner_pubkey_digest(&owner).unwrap();
-        let profile = fixture_profile(None, Some(digest));
-        assert!(admit_identity(
-            &profile,
-            &IdentityClass::RecoveredExisting { pubkey_hex: owner },
-        )
-        .is_accept());
-        let prefix_collision = format!("{OWNER_DISPLAY_PREFIX}{}", "11".repeat(28));
-        assert_eq!(
-            admit_identity(
-                &profile,
-                &IdentityClass::RecoveredExisting {
-                    pubkey_hex: prefix_collision,
-                },
-            )
-            .deny_case(),
-            Some(DenyCase::WrongIdentity)
-        );
-    }
-
-    #[test]
-    fn locked_and_lost_fail_closed() {
-        let profile = fixture_profile(Some(fixture_owner_hex()), None);
-        assert_eq!(
-            admit_identity(&profile, &IdentityClass::KeyringLocked).deny_case(),
-            Some(DenyCase::LockedKeychain)
-        );
-        assert_eq!(
-            admit_identity(&profile, &IdentityClass::ExistingIdentityLost).deny_case(),
-            Some(DenyCase::ExistingIdentityUnrecoverable)
-        );
-    }
-
-    #[test]
-    fn relay_is_3300_and_does_not_fall_back_to_3000() {
-        assert!(admit_relay(PRODUCTION_RELAY_WS_URL, RelayProbe::Available).is_accept());
-        assert_eq!(
-            admit_relay(PRODUCTION_RELAY_WS_URL, RelayProbe::Unavailable).deny_case(),
-            Some(DenyCase::RelayUnavailable)
-        );
-        assert_eq!(
-            admit_relay("ws://localhost:3000", RelayProbe::Available).deny_case(),
-            Some(DenyCase::RelayMismatch)
-        );
-    }
-
-    #[test]
-    fn production_keyring_and_bundle_pins() {
-        assert!(admit_keyring_service(PRODUCTION_KEYRING_SERVICE).is_accept());
-        assert_eq!(
-            admit_keyring_service(DEBUG_KEYRING_SERVICE).deny_case(),
-            Some(DenyCase::KeyringServiceMismatch)
-        );
-        assert!(admit_bundle_identifier(BUNDLE_IDENTIFIER).is_accept());
-        assert_eq!(
-            admit_bundle_identifier("xyz.block.buzz.app.dev").deny_case(),
-            Some(DenyCase::BundleIdentifierMismatch)
-        );
-    }
-
-    #[test]
-    fn frontend_dist_not_dev_url() {
-        assert!(admit_frontend_embed(Some(FRONTEND_DIST), false).is_accept());
-        assert_eq!(
-            admit_frontend_embed(Some(FRONTEND_DIST), true).deny_case(),
-            Some(DenyCase::FrontendDevUrl)
-        );
-    }
-
-    #[test]
-    fn tauri_conf_embeds_frontend_dist_and_production_bundle_id() {
-        let raw = include_str!("../tauri.conf.json");
-        let conf: serde_json::Value = serde_json::from_str(raw).expect("tauri.conf.json");
-        assert_eq!(conf["identifier"].as_str(), Some(BUNDLE_IDENTIFIER));
-        assert_eq!(conf["build"]["frontendDist"].as_str(), Some(FRONTEND_DIST));
-        assert!(admit_frontend_embed(conf["build"]["frontendDist"].as_str(), false).is_accept());
-    }
-
-    #[test]
-    fn transport_is_not_failed_because_desktop_is_absent() {
-        assert!(admit_transport(TransportObservation::Ready).is_accept());
-        assert_eq!(
-            admit_transport(TransportObservation::FailedBecauseDesktopAbsent).deny_case(),
-            Some(DenyCase::TransportDesktopOptional)
-        );
-    }
-
-    #[test]
-    fn signed_app_boolean_is_not_proof() {
-        assert_eq!(
-            admit_macos_app_artifact(None).deny_case(),
-            Some(DenyCase::MacAppUnproven)
-        );
-        assert!(admit_macos_app_artifact(Some(&format!("sha256:{}", "ab".repeat(32)))).is_accept());
-    }
-
-    #[test]
-    fn rollback_authenticates_recomputed_tree() {
-        let current = "sha256:aaa";
-        let target = "sha256:bbb";
-        assert!(admit_rollback_target(target, target, current).is_accept());
-        assert_eq!(
-            admit_rollback_target(target, "sha256:forged", current).deny_case(),
-            Some(DenyCase::RollbackUnauthenticated)
-        );
-        assert_eq!(
-            admit_rollback_target(current, current, current).deny_case(),
-            Some(DenyCase::RollbackUnauthenticated)
-        );
-    }
-
-    #[test]
-    fn state_and_logs_must_leave_checkout_and_dawsos_ops() {
-        let checkout = Path::new("/Users/mike/src/buzz");
-        let ok_state = Path::new("/Users/mike/Library/Application Support/xyz.block.buzz.app");
-        let ok_logs = Path::new("/Users/mike/Library/Logs/xyz.block.buzz.app");
-        assert!(admit_runtime_path(checkout, ok_state, RuntimePathKind::State).is_accept());
-        assert!(admit_runtime_path(checkout, ok_logs, RuntimePathKind::Log).is_accept());
-        assert_eq!(
-            admit_runtime_path(
-                checkout,
-                &checkout.join("desktop/state"),
-                RuntimePathKind::State
-            )
-            .deny_case(),
-            Some(DenyCase::StatePathForbidden)
-        );
-        assert_eq!(
-            admit_runtime_path(
-                checkout,
-                Path::new("/Users/mike/DawsOS/reports/desktop.log"),
-                RuntimePathKind::Log
-            )
-            .deny_case(),
-            Some(DenyCase::LogPathForbidden)
-        );
-    }
-
-    #[test]
-    fn display_prefix_is_not_a_boundary() {
-        let owner = fixture_owner_hex();
-        assert_eq!(display_prefix(&owner), OWNER_DISPLAY_PREFIX);
-        assert_ne!(owner, OWNER_DISPLAY_PREFIX);
-        assert!(!owner.starts_with("nsec"));
-    }
-
-    #[test]
-    fn deny_first_launch_generate_respects_inactive_profile() {
-        assert!(deny_first_launch_generate().is_ok());
-        with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-            assert!(deny_first_launch_generate().is_err());
-            assert!(profile_active());
-        });
-        assert!(!profile_active());
-    }
-}
+#[path = "local_dev_production_tests.rs"]
+mod tests;

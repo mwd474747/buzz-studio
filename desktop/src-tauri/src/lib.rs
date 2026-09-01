@@ -419,20 +419,6 @@ pub fn run() {
                 eprintln!("buzz-desktop: fatal: identity resolution failed: {e}");
                 std::process::exit(1);
             }
-            if crate::local_dev_production::profile_active() {
-                let pubkey = match state.keys.lock() {
-                    Ok(keys) => keys.public_key().to_hex(),
-                    Err(e) => {
-                        eprintln!("buzz-desktop: fatal: identity lock poisoned: {e}");
-                        std::process::exit(1);
-                    }
-                };
-                if let Err(e) = crate::local_dev_production::admit_boot_identity(&pubkey) {
-                    eprintln!("buzz-desktop: fatal: local-dev production admission failed: {e}");
-                    std::process::exit(1);
-                }
-            }
-
             // When the identity is in recovery mode (lost = keyring empty after
             // migration, or keyring-locked = keyring unreachable but marker
             // present), all owner-keyed side effects (event sync, agent restore,

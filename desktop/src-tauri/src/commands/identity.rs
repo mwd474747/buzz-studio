@@ -410,6 +410,7 @@ fn commit_imported_identity(
     persist: impl FnOnce(&nostr::Keys) -> Result<crate::app_state::IdentityStorage, String>,
 ) -> Result<(nostr::PublicKey, crate::app_state::IdentityStorage), String> {
     // Capture the previous pubkey up front for post-commit cleanup.
+    crate::local_dev_production::admit_imported_identity(&keys.public_key().to_hex())?;
     let previous_pubkey = state.keys.lock().map_err(|e| e.to_string())?.public_key();
 
     let storage = persist(&keys)?;
