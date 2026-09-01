@@ -83,11 +83,13 @@ Tauri boot path (`desktop/src-tauri`):
 - Bundle identifier `xyz.block.buzz.app`
 - Production keyring `buzz-desktop` (not `buzz-desktop-dev`)
 - Relay `ws://localhost:3300` (not `:3000`)
-- Owner public-key pin is the ratified 64-hex key and `sha256:` of the raw
-  32-byte key compiled into `.release/local-dev-production.json`. Display
-  prefix `ea840b3e` is not a boundary. Manifest pins must equal that compiled
-  JSON byte-for-byte; a forged exact pin against an unpinned compiled profile
-  is denied. Finder-launched signed apps do not inherit worker env vars.
+- Owner public-key pin is the compiled 64-hex key and `sha256:` of the raw
+  32-byte key in `.release/local-dev-production.json`. Display prefix
+  `ea840b3e` is not a boundary. Manifest pins must equal that compiled JSON
+  byte-for-byte; a forged exact pin against an unpinned compiled profile is
+  denied. Authority class is the SuperDaws-chat receipt in
+  `.release/SUPERDAWS-OWNER-PIN-RECEIPT.md` (not a Clerk Word).
+  Finder-launched signed apps do not inherit worker env vars.
 - Approved macOS Team ID / codesign identity pins are compiled and currently
   empty (leftover `approved-macos-signing-pin`). Do not invent a Team ID.
   Empty signing pins fail closed.
@@ -116,8 +118,10 @@ and independent codesign/Gatekeeper/stapler on a real Buzz.app. App tree
 digests include symlinks and file modes. `live/` is not written until that
 proof succeeds. Incomplete observations go under `candidate/evidence/`. The
 owner pin comes only from the compiled profile; CLI cannot override it.
-See `.release/LEFTOVER-mac-packaged-app-build.md`. Do not install or start
-Buzz.app from this flow. This leftover does not claim a signed Mac app exists.
+See `.release/LEFTOVER-mac-packaged-app-build.md` and
+`.release/LEFTOVER-mac-controlled-candidate-producer.md`. Do not install
+or start Buzz.app from this flow. This leftover does not claim a signed Mac
+app exists. This head is not a Stage 2 pass.
 
 ### Relay
 

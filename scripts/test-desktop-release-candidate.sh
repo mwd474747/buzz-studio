@@ -186,6 +186,7 @@ assert manifest["artifacts"]["macos_app"] is None
 assert manifest["leftovers"][0]["id"] == "mac-packaged-app-build"
 assert manifest["leftovers"][0]["status"] == "needed"
 assert any(item["id"] == "approved-macos-signing-pin" and item["status"] == "needed" for item in manifest["leftovers"])
+assert any(item["id"] == "mac-controlled-candidate-producer" and item["status"] == "needed" for item in manifest["leftovers"])
 assert manifest["buzz_transport"] == "optional-to-transport"
 assert manifest["desktop_requires_relay"] is True
 assert manifest["transport_requires_desktop"] is False
@@ -316,6 +317,219 @@ manifest = json.loads((base / "manifest.json").read_text())
 assert manifest["owner_pin"]["status"] == "exact+digest"
 PY
   rm -rf "$still_unsigned"
+
+  auth_root=$(mktemp -d)
+  scripts/desktop_release.py local-dev-package --release-root "$auth_root"
+  if scripts/desktop_release.py local-dev-produce-app --release-root "$auth_root" >/dev/null 2>&1; then
+    echo "Linux producer faked a signed .app" >&2
+    exit 1
+  fi
+  python3 - <<PY
+import importlib.util, json, os, pathlib, shutil, stat, sys, tempfile
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("desktop_release", "scripts/desktop_release.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+root = pathlib.Path("$auth_root")
+current, dest, manifest = mod.authenticate_source_package(root)
+assert current == manifest["content_digest"]
+assert dest.parent.resolve() == (root / "releases").resolve()
+assert not (dest / "live").exists()
+producer = dest / "candidate" / "unsigned" / "producer-leftover.json"
+assert producer.is_file()
+assert json.loads(producer.read_text())["id"] == "mac-controlled-candidate-producer"
+
+# Pointer traversal
+bad_root = pathlib.Path(tempfile.mkdtemp())
+(bad_root / "releases").mkdir()
+(bad_root / "current").write_text("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/../etc\n")
+try:
+    mod.authenticate_source_package(bad_root)
+    raise SystemExit("traversal current pointer was accepted")
+except SystemExit as exc:
+    if "exactly sha256:" not in str(exc):
+        raise
+outside = pathlib.Path(tempfile.mkdtemp())
+(outside / "manifest.json").write_text("{}\n")
+hex64 = "b" * 64
+link = bad_root / "releases" / f"sha256-{hex64}"
+link.symlink_to(outside)
+(bad_root / "current").write_text(f"sha256:{hex64}\n")
+try:
+    mod.authenticate_source_package(bad_root)
+    raise SystemExit("symlinked package destination escaped the release root")
+except SystemExit as exc:
+    if "escaped" not in str(exc) and "direct child" not in str(exc) and "missing" not in str(exc):
+        raise
+
+# Tampered base manifest / proof / profile must deny before writes
+tamper = pathlib.Path(tempfile.mkdtemp())
+shutil.copytree(root / "releases", tamper / "releases")
+shutil.copy(root / "current", tamper / "current")
+tamper_dest = tamper / "releases" / current.replace(":", "-")
+before = list((tamper_dest / "candidate").rglob("*")) if (tamper_dest / "candidate").exists() else []
+manifest_path = tamper_dest / "manifest.json"
+data = json.loads(manifest_path.read_text())
+data["content_digest"] = "sha256:" + ("ee" * 32)
+manifest_path.write_text(json.dumps(data, indent=2) + "\n")
+try:
+    mod.authenticate_source_package(tamper)
+    raise SystemExit("tampered manifest digest was accepted")
+except SystemExit:
+    pass
+after = list((tamper_dest / "candidate").rglob("*")) if (tamper_dest / "candidate").exists() else []
+assert after == before, "authenticator failure wrote evidence"
+data = json.loads((dest / "manifest.json").read_text())
+# restore from the authenticated dest for proof/profile tampers on a fresh copy
+tamper2 = pathlib.Path(tempfile.mkdtemp())
+shutil.copytree(root / "releases", tamper2 / "releases")
+shutil.copy(root / "current", tamper2 / "current")
+t2 = tamper2 / "releases" / current.replace(":", "-")
+proof = json.loads((t2 / "proofs" / "source-tree.json").read_text())
+proof[0]["digest"] = "sha256:" + ("11" * 32)
+(t2 / "proofs" / "source-tree.json").write_text(json.dumps(proof) + "\n")
+try:
+    mod.authenticate_source_package(tamper2)
+    raise SystemExit("tampered source-tree proof was accepted")
+except SystemExit:
+    pass
+assert not (t2 / "live").exists()
+(t2 / "profile.json").write_text("{}\n")
+# current still matches dest name but profile bytes differ; proof already broken
+# use a third copy for profile-only tamper
+tamper3 = pathlib.Path(tempfile.mkdtemp())
+shutil.copytree(root / "releases", tamper3 / "releases")
+shutil.copy(root / "current", tamper3 / "current")
+t3 = tamper3 / "releases" / current.replace(":", "-")
+(t3 / "profile.json").write_bytes(b'{"tampered":true}\n')
+try:
+    mod.authenticate_source_package(tamper3)
+    raise SystemExit("tampered stored profile was accepted")
+except SystemExit:
+    pass
+assert not (t3 / "candidate" / "evidence").exists() or not list((t3 / "candidate" / "evidence").glob("*"))
+
+# PATH spoofing
+try:
+    mod._run_macos_tool(["codesign", "--verify", "x"])
+    raise SystemExit("PATH-resolved codesign was accepted")
+except SystemExit as exc:
+    if "trusted absolute path" not in str(exc) and "PATH spoofing" not in str(exc):
+        raise
+try:
+    mod._run_macos_tool(["/tmp/codesign", "--verify", "x"])
+    raise SystemExit("untrusted absolute codesign was accepted")
+except SystemExit as exc:
+    if "trusted absolute path" not in str(exc):
+        raise
+try:
+    mod._run_macos_tool(["/usr/bin/xcrun", "not-stapler", "validate", "x"])
+    raise SystemExit("xcrun without stapler was accepted")
+except SystemExit as exc:
+    if "stapler" not in str(exc):
+        raise
+
+# Missing / wrong embedded resources
+app = pathlib.Path(tempfile.mkdtemp()) / "Buzz.app"
+(app / "Contents/MacOS").mkdir(parents=True)
+(app / "Contents/Resources/.release").mkdir(parents=True)
+(app / "Contents/Info.plist").write_bytes(b"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>xyz.block.buzz.app</string>
+<key>CFBundleExecutable</key><string>Buzz</string>
+<key>CFBundleShortVersionString</key><string>0.0.0-test</string>
+</dict></plist>
+""")
+(app / "Contents/MacOS/Buzz").write_text("unsigned-executable")
+evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
+assert evidence["signed"] is False
+assert "embedded production profile" in (evidence.get("reason") or "")
+(app / "Contents/Resources/.release/local-dev-production.json").write_bytes(
+    pathlib.Path(".release/local-dev-production.json").read_bytes()
+)
+(app / "Contents/Resources/.release/source-receipt.json").write_text("{}\n")
+evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
+assert evidence["signed"] is False
+assert "receipt" in (evidence.get("reason") or "")
+
+# Wrong executable provenance: embed then bind a different digest
+provenance = mod.embed_profile_and_receipt(app, manifest)
+(dest / "candidate" / "unsigned").mkdir(parents=True, exist_ok=True)
+forged = dict(provenance)
+forged["executable_sha256"] = "sha256:" + ("99" * 32)
+(dest / "candidate" / "unsigned" / "build-provenance.json").write_text(json.dumps(forged, indent=2) + "\n")
+evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
+assert evidence["signed"] is False
+assert evidence["provenance_matches"] is False
+assert "provenance" in (evidence.get("reason") or "")
+
+# Unreadable / unsupported tree entries fail closed
+fifo_dir = pathlib.Path(tempfile.mkdtemp())
+os.mkfifo(fifo_dir / "pipe")
+try:
+    mod.sha256_tree(fifo_dir)
+    raise SystemExit("fifo tree entry was skipped")
+except SystemExit as exc:
+    if "unsupported" not in str(exc):
+        raise
+secret_dir = pathlib.Path(tempfile.mkdtemp())
+secret = secret_dir / "secret"
+secret.write_text("hidden")
+os.chmod(secret, 0)
+try:
+    if os.geteuid() != 0:
+        try:
+            mod.sha256_tree(secret_dir)
+            raise SystemExit("unreadable file was skipped")
+        except SystemExit as exc:
+            if "unreadable" not in str(exc):
+                raise
+finally:
+    os.chmod(secret, 0o644)
+
+# Successful live admission uses a test-only identity double after auth.
+# It is not compiled and is not an Apple Team ID.
+def test_pins(_profile=None):
+    return {
+        "approved_team_id": "TESTONLYID",
+        "approved_codesign_identity": "Test-Only Identity",
+        "required": True,
+        "filled": True,
+    }
+mod.compiled_macos_signing_pins = test_pins
+live_evidence = {
+    "app_path": "/tmp/TestOnly.app",
+    "sha256": "sha256:" + ("ab" * 32),
+    "signed": True,
+    "notarized": True,
+    "stapled": True,
+    "codesign_verify": True,
+    "gatekeeper": True,
+    "embedded_profile_matches": True,
+    "receipt_matches": True,
+    "provenance_matches": True,
+    "bundle_identifier": "xyz.block.buzz.app",
+    "team_id": "TESTONLYID",
+    "codesign_identity": "Test-Only Identity",
+    "notarization": "stapler-validate",
+    "executable": "/tmp/TestOnly.app/Contents/MacOS/Buzz",
+    "executable_sha256": "sha256:" + ("cd" * 32),
+    "version": "0.0.0-test",
+    "receipt": {"test_only": True},
+    "reason": "test-only live admission after authenticator",
+}
+live_path = mod.write_live_if_proven(dest, manifest, live_evidence)
+assert live_path.is_file()
+assert (dest / "live" / "manifest.json").is_file()
+try:
+    mod.write_live_if_proven(dest, manifest, live_evidence)
+    raise SystemExit("live/ write-once was reopened")
+except SystemExit as exc:
+    if "write-once" not in str(exc):
+        raise
+PY
+  rm -rf "$auth_root"
 )
 
 echo "desktop release candidate contract passed"

@@ -6,6 +6,6 @@ empty in `.release/local-dev-production.json`.
 **Does not:** treat any Apple-notarized app as Buzz.app.
 **Does not:** write `live/`.
 
-Mike/Codex must fill the real Apple Team ID and Developer ID identity into
-the compiled profile. Until those pins are present, independent `.app`
+The real Apple Team ID and Developer ID identity must be compiled in later.
+Do not invent them. Until those pins are present, independent `.app`
 admission fails closed even if `codesign`, Gatekeeper, and stapler succeed.

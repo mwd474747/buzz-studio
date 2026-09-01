@@ -43,9 +43,9 @@ faking macOS tools. Incomplete observations go under `candidate/evidence/`.
 - Production compile env (Mac worker only; do not apply to a live running app):
   - `BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1` (compile-time profile activation)
   - `BUZZ_RELAY_URL=ws://localhost:3300`
-  - Owner pin is the ratified compiled-in 64-hex public key and `sha256:` of
-    the raw 32-byte key. Env vars are not a Finder-launched pin. Prefix
-    `ea840b3e` is display-only.
+  - Owner pin is the compiled-in 64-hex public key and `sha256:` of the raw
+    32-byte key. Env vars are not a Finder-launched pin. Prefix `ea840b3e`
+    is display-only. Authority class: `.release/SUPERDAWS-OWNER-PIN-RECEIPT.md`.
 
 ## Worker outputs
 

@@ -6,10 +6,12 @@
 //! prints `nsec`.
 //!
 //! The in-tree profile (`.release/local-dev-production.json`) carries the
-//! ratified `#local-dev` owner public-key pin. Display prefix `ea840b3e` is
+//! compiled `#local-dev` owner public-key pin. Display prefix `ea840b3e` is
 //! for display only. Env vars are not a Finder-launched pin. Approved macOS
-//! Team ID / identity pins stay empty until Mike/Codex fill them; empty
-//! signing pins fail closed. This module does not invent a Team ID.
+//! Team ID / identity pins stay empty (leftover; do not invent them). Empty
+//! signing pins fail closed. Authority class for the compile-in pin is the
+//! SuperDaws-chat receipt in `.release/SUPERDAWS-OWNER-PIN-RECEIPT.md`, not
+//! a Clerk Word.
 
 use sha2::{Digest, Sha256};
 

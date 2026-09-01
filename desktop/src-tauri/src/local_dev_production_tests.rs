@@ -11,7 +11,7 @@ const RATIFIED_OWNER_PUBKEY_SHA256: &str =
     "sha256:af3cd8c1007e504b9d0385c0090395f2a4fecef56e34fd91e66301093583637e";
 
 #[test]
-fn in_tree_profile_carries_the_ratified_owner_pin() {
+fn in_tree_profile_carries_the_compiled_owner_pin() {
     let profile = load_in_tree_profile().expect("in-tree profile must parse");
     assert_eq!(profile.profile, "local-dev-production");
     assert_eq!(profile.bundle_identifier, BUNDLE_IDENTIFIER);
