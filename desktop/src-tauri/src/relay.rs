@@ -24,6 +24,9 @@ fn configured_env_var(name: &str) -> Option<String> {
 }
 
 pub fn relay_ws_url() -> String {
+    if crate::local_dev_production::profile_active() {
+        return crate::local_dev_production::PRODUCTION_RELAY_WS_URL.to_string();
+    }
     configured_env_var("BUZZ_RELAY_URL")
         .or_else(|| option_env!("BUZZ_DESKTOP_BUILD_RELAY_URL").map(str::to_string))
         .unwrap_or_else(|| DEFAULT_RELAY_WS_URL.to_string())

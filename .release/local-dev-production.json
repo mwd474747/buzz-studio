@@ -1,0 +1,26 @@
+{
+  "profile": "local-dev-production",
+  "bundle_identifier": "xyz.block.buzz.app",
+  "keyring_service": "buzz-desktop",
+  "debug_keyring_service": "buzz-desktop-dev",
+  "relay_ws_url": "ws://localhost:3300",
+  "owner_display_prefix": "ea840b3e",
+  "owner_pubkey": null,
+  "owner_pubkey_sha256": null,
+  "frontend_dist": "../dist",
+  "buzz_transport": "optional",
+  "state_root": {
+    "macos": "${HOME}/Library/Application Support/xyz.block.buzz.app",
+    "linux_test": "${XDG_STATE_HOME:-${HOME}/.local/state}/xyz.block.buzz.app"
+  },
+  "log_root": {
+    "macos": "${HOME}/Library/Logs/xyz.block.buzz.app",
+    "linux_test": "${XDG_STATE_HOME:-${HOME}/.local/state}/xyz.block.buzz.app/logs"
+  },
+  "forbidden_runtime_roots": [
+    "source-checkout",
+    "dawsos-reports",
+    "dawsos-ops",
+    "reports/ops"
+  ]
+}

@@ -16,7 +16,22 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_OBSERVER_ARCHIVE_DEFAULT");
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AGENT_METRIC_ARCHIVE_DEFAULT");
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY");
+    println!("cargo:rerun-if-env-changed=BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION");
+    println!("cargo:rerun-if-changed=../../.release/local-dev-production.json");
     println!("cargo:rustc-check-cfg=cfg(buzz_updater_enabled)");
+
+    // Local-dev production profile: pin the compile-time relay and activate
+    // boot-time admission in the existing Desktop release lane. Ordinary OSS
+    // builds leave this unset.
+    if std::env::var("BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION")
+        .ok()
+        .is_some_and(|value| !value.is_empty())
+    {
+        println!("cargo:rustc-env=BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1");
+        if std::env::var("BUZZ_RELAY_URL").is_err() {
+            println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_RELAY_URL=ws://localhost:3300");
+        }
+    }
 
     if let Ok(relay_url) = std::env::var("BUZZ_RELAY_URL") {
         println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_RELAY_URL={relay_url}");

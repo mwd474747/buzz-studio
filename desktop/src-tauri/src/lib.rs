@@ -11,6 +11,7 @@ mod huddle;
 mod identity_storage;
 mod key_backup;
 mod linux_media;
+mod local_dev_production;
 mod managed_agents;
 mod media_proxy;
 #[cfg(feature = "mesh-llm")]
@@ -417,6 +418,19 @@ pub fn run() {
             if let Err(e) = resolve_persisted_identity(&app_handle, &state) {
                 eprintln!("buzz-desktop: fatal: identity resolution failed: {e}");
                 std::process::exit(1);
+            }
+            if crate::local_dev_production::profile_active() {
+                let pubkey = match state.keys.lock() {
+                    Ok(keys) => keys.public_key().to_hex(),
+                    Err(e) => {
+                        eprintln!("buzz-desktop: fatal: identity lock poisoned: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                if let Err(e) = crate::local_dev_production::admit_boot_identity(&pubkey) {
+                    eprintln!("buzz-desktop: fatal: local-dev production admission failed: {e}");
+                    std::process::exit(1);
+                }
             }
 
             // When the identity is in recovery mode (lost = keyring empty after

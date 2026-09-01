@@ -7,6 +7,9 @@ fn dev_keyring_service(configured: Option<String>) -> String {
 }
 
 pub(crate) fn keyring_service() -> &'static str {
+    if crate::local_dev_production::profile_active() {
+        return "buzz-desktop";
+    }
     if cfg!(debug_assertions) {
         static DEV_SERVICE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         DEV_SERVICE

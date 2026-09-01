@@ -70,6 +70,45 @@ or mobile GitHub Release.
    last for stable versions. A failed platform leaves no partially published
    versioned release.
 
+### Local-dev production profile
+
+The same Desktop lane (`scripts/desktop_release.py`,
+`.release/desktop-candidate.json`, `just release-desktop`) also owns a
+`#local-dev` production profile used for boot-time admission — not a second
+packager, schema, or crate.
+
+Pins live in `.release/local-dev-production.json` and are compiled into the
+Tauri boot path (`desktop/src-tauri`):
+
+- Bundle identifier `xyz.block.buzz.app`
+- Production keyring `buzz-desktop` (not `buzz-desktop-dev`)
+- Relay `ws://localhost:3300` (not `:3000`)
+- Owner public-key pin must be the complete 64-hex key or a `sha256:` digest.
+  Display prefix `ea840b3e` is not a boundary. The in-tree profile does not
+  invent this key; set `BUZZ_DESKTOP_OWNER_PUBKEY` or
+  `BUZZ_DESKTOP_OWNER_PUBKEY_SHA256`. Missing pin fails closed.
+- First-launch generate is refused while the profile is active
+  (`BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1`).
+- Desktop remains optional to `buzz_transport`. Transport is not failed solely
+  because Desktop is absent. Desktop requires the relay, not the reverse.
+
+```sh
+just release-desktop-local-dev-package /var/tmp/buzz-desktop-releases
+just release-desktop-local-dev-verify /var/tmp/buzz-desktop-releases
+just release-desktop-local-dev-rollback /var/tmp/buzz-desktop-releases sha256:<digest>
+```
+
+The packager hashes the **complete clean source tree**, requires
+`source_commit == HEAD`, and refuses to reopen an existing digest directory.
+Verification recomputes that digest. Rollback authenticates the target tree
+proof rather than trusting mutable pointer files.
+
+A Linux host cannot produce a signed, notarized `Buzz.app`. Source packages
+record leftover `mac-packaged-app-build`. Live admission requires the signed
+`.app` SHA-256 from a Mac worker. A boolean `true` is not proof. See
+`.release/LEFTOVER-mac-packaged-app-build.md`. Do not install or start Buzz.app
+from this flow.
+
 ### Relay
 
 1. **`just release-relay`** runs locally on `main`, creates or updates a

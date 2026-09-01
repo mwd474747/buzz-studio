@@ -726,6 +726,19 @@ bump-relay-version version:
     cargo update -p buzz-relay
     echo "Bumped buzz-relay to {{ version }} and regenerated Cargo.lock"
 
+# Package a local-dev production source tree into an existing Desktop release-lane digest.
+# Does not install, start, or replace a live Mac Buzz.app. Linux cannot emit a signed .app.
+release-desktop-local-dev-package release_root:
+    scripts/desktop_release.py local-dev-package --release-root {{release_root}}
+
+# Recompute the complete source-tree digest for a local-dev production package.
+release-desktop-local-dev-verify release_root:
+    scripts/desktop_release.py local-dev-verify --release-root {{release_root}}
+
+# Roll back to an authenticated target tree digest (not a mutable pointer).
+release-desktop-local-dev-rollback release_root target_digest:
+    scripts/desktop_release.py local-dev-rollback --release-root {{release_root}} --target-digest {{target_digest}}
+
 # Open or update the desktop release PR from an immutable origin/main snapshot
 release-desktop *ARGS:
     #!/usr/bin/env bash

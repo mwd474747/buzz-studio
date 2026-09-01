@@ -359,7 +359,8 @@ pub fn resolve_persisted_identity(app: &AppHandle, state: &AppState) -> Result<(
     // Only skip file-based resolution if the env var was present AND parsed
     // successfully. A malformed env var should fall through to the persisted
     // key rather than leaving the app on an ephemeral identity.
-    if identity_from_env().is_some() {
+    if let Some(keys) = identity_from_env() {
+        crate::local_dev_production::admit_boot_identity(&keys.public_key().to_hex())?;
         return Ok(());
     }
 
@@ -370,6 +371,7 @@ pub fn resolve_persisted_identity(app: &AppHandle, state: &AppState) -> Result<(
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create app data dir: {e}"))?;
 
     let resolved = load_or_create_identity(&data_dir)?;
+    crate::local_dev_production::admit_boot_identity(&resolved.keys.public_key().to_hex())?;
     // Write keys and storage before setting the recovery flags (Release) so
     // any thread that reads a flag as false with Acquire sees consistent data.
     {
@@ -463,8 +465,19 @@ fn load_or_create_identity(data_dir: &std::path::Path) -> Result<ResolvedIdentit
 
 /// Identity resolution over an [`IdentityKeyStore`] seam. Split from
 /// [`load_or_create_identity`] so the probe/recover branches are testable
-/// without the live OS keyring.
+/// without the live OS keyring. When the local-dev production profile is
+/// active, recovered identities must pass boot admission (exact owner pin).
 fn resolve_identity_with_store(
+    store: &impl IdentityKeyStore,
+    legacy_path: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Result<ResolvedIdentity, String> {
+    let resolved = resolve_identity_unadmitted(store, legacy_path, data_dir)?;
+    crate::local_dev_production::admit_boot_identity(&resolved.keys.public_key().to_hex())?;
+    Ok(resolved)
+}
+
+fn resolve_identity_unadmitted(
     store: &impl IdentityKeyStore,
     legacy_path: &std::path::Path,
     data_dir: &std::path::Path,
@@ -601,6 +614,7 @@ fn resolve_identity_with_store(
                 // Generate an ephemeral in-memory key so the app can boot, but
                 // surface a "lost" flag so the frontend prompts re-import rather
                 // than silently starting a fresh identity.
+                crate::local_dev_production::deny_locked_or_lost(false, true)?;
                 let ephemeral = Keys::generate();
                 eprintln!(
                     "buzz-desktop: identity lost — keyring was empty despite migration marker; \
@@ -629,6 +643,7 @@ fn resolve_identity_with_store(
             //   - no marker → genuine first-ever launch with nothing to protect.
             //     Generate to the `0o600` file (legitimate first-run).
             if !legacy_path.exists() && migration_marker_path(data_dir).exists() {
+                crate::local_dev_production::deny_locked_or_lost(true, false)?;
                 let ephemeral = Keys::generate();
                 eprintln!(
                     "buzz-desktop: keyring unreachable but migration marker present; \
@@ -689,6 +704,7 @@ fn recover_from_keyring(
     // identity was stored in the keyring and is now corrupt AND gone — the key
     // is unrecoverable. Enter Lost recovery instead of silently rotating.
     if migration_marker_path(data_dir).exists() {
+        crate::local_dev_production::deny_locked_or_lost(false, true)?;
         let ephemeral = Keys::generate();
         eprintln!(
             "buzz-desktop: identity lost — keyring had corrupt data and no valid identity.key \
@@ -703,6 +719,7 @@ fn recover_from_keyring(
         });
     }
     // No marker: genuine first launch with a corrupt keyring. Generate fresh.
+    crate::local_dev_production::deny_first_launch_generate()?;
     let (keys, storage) = generate_and_persist(store, legacy_path, data_dir)?;
     Ok(ResolvedIdentity {
         keys,
@@ -729,6 +746,7 @@ fn load_file_or_generate(
             Err(error) => quarantine_corrupt_key(legacy_path, data_dir, &error),
         }
     }
+    crate::local_dev_production::deny_first_launch_generate()?;
     let keys = Keys::generate();
     save_key_file(legacy_path, &keys)?;
     eprintln!(
@@ -935,6 +953,7 @@ fn generate_and_persist(
     legacy_path: &std::path::Path,
     data_dir: &std::path::Path,
 ) -> Result<(Keys, IdentityStorage), String> {
+    crate::local_dev_production::deny_first_launch_generate()?;
     let keys = Keys::generate();
     let storage = store_key_preferring_keyring(store, &keys, legacy_path)?;
     if storage == IdentityStorage::SystemKeyring {
