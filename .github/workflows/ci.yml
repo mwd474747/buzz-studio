@@ -25,6 +25,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       desktop: ${{ steps.filter.outputs.desktop }}
       desktop-rust: ${{ steps.filter.outputs.desktop-rust }}
+      desktop-release: ${{ steps.filter.outputs.desktop-release }}
       web: ${{ steps.filter.outputs.web }}
       mobile: ${{ steps.filter.outputs.mobile }}
     steps:
@@ -55,6 +56,14 @@ jobs:
               - 'pnpm-lock.yaml'
             desktop-rust:
               - 'desktop/src-tauri/**'
+            desktop-release:
+              - 'scripts/desktop_release.py'
+              - 'scripts/test-desktop-release-candidate.sh'
+              - '.release/local-dev-production.json'
+              - '.release/LEFTOVER-mac-*.md'
+              - '.release/SUPERDAWS-OWNER-PIN-RECEIPT.md'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/desktop-release-candidate.yml'
             web:
               - 'scripts/check-file-sizes-core.mjs'
               - 'scripts/check-file-sizes-core.test.mjs'
@@ -1036,11 +1045,13 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-release == 'true'
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Desktop release candidate contract
+        run: scripts/test-desktop-release-candidate.sh
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:

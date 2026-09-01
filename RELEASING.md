@@ -115,10 +115,13 @@ caller-supplied identity strings are not proof. Any Apple-notarized app is
 not enough: admission requires this bundle identifier, compiled signing
 pins, executable, version, source/build receipt, embedded compiled profile,
 and independent codesign/Gatekeeper/stapler on a real Buzz.app. App tree
-digests include symlinks and file modes. `live/` is not written until that
-proof succeeds. Incomplete observations go under `candidate/evidence/`. The
-owner pin comes only from the compiled profile; CLI cannot override it.
-See `.release/LEFTOVER-mac-packaged-app-build.md` and
+digests include symlinks and file modes. The self-attesting Mac producer is
+hard-disabled (Stage 3 leftover `mac-controlled-candidate-producer`): it
+must not manufacture provenance from caller-supplied `.app` bytes.
+`live/` is refused for self-attested or caller-supplied provenance.
+Incomplete observations go under `candidate/evidence/` through a no-symlink
+contained write helper. The owner pin comes only from the compiled profile;
+CLI cannot override it. See `.release/LEFTOVER-mac-packaged-app-build.md` and
 `.release/LEFTOVER-mac-controlled-candidate-producer.md`. Do not install
 or start Buzz.app from this flow. This leftover does not claim a signed Mac
 app exists. This head is not a Stage 2 pass.

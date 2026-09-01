@@ -32,8 +32,10 @@ must independently recompute the tree digest (files, **symlinks**, and
   `stapler validate` on macOS
 
 An unrelated Apple-notarized app fails. On Linux this fails closed without
-faking macOS tools. Incomplete observations go under `candidate/evidence/`.
-`live/` is write-once for a proven candidate only.
+faking macOS tools. Incomplete observations go under `candidate/evidence/` via the no-symlink
+contained write helper. `live/` is refused while leftover
+`mac-controlled-candidate-producer` is needed. Self-attested or
+caller-supplied provenance cannot write `live/`.
 
 ## Worker inputs
 
@@ -54,8 +56,10 @@ faking macOS tools. Incomplete observations go under `candidate/evidence/`.
 2. Independent verification of **this** Buzz.app (not any notarized app).
    On Linux this stays fail-closed.
 3. Leftover `mac-packaged-app-build` status `satisfied` and `live/` only
-   when that independent verification succeeds. Unsigned observations stay
-   in `candidate/evidence/`.
+   when independent verification succeeds **and** leftover
+   `mac-controlled-candidate-producer` is satisfied by an isolated-mac-lane
+   builder attestation (Stage 3). Unsigned observations stay in
+   `candidate/evidence/`. Self-attested provenance is not enough.
 4. Write-once publication (fail if that digest directory already exists).
    Owner pin comes only from the compiled `.release/local-dev-production.json`
    bytes. CLI cannot override it. A forged exact manifest pin against an

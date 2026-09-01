@@ -321,11 +321,19 @@ PY
   auth_root=$(mktemp -d)
   scripts/desktop_release.py local-dev-package --release-root "$auth_root"
   if scripts/desktop_release.py local-dev-produce-app --release-root "$auth_root" >/dev/null 2>&1; then
-    echo "Linux producer faked a signed .app" >&2
+    echo "producer manufactured a signed .app on $(uname -s)" >&2
+    exit 1
+  fi
+  caller_app=$(mktemp -d)/Caller.app
+  mkdir -p "$caller_app/Contents/MacOS"
+  echo caller > "$caller_app/Contents/MacOS/Buzz"
+  if scripts/desktop_release.py local-dev-produce-app --release-root "$auth_root" \
+      --unsigned-app "$caller_app" >/dev/null 2>&1; then
+    echo "producer accepted caller-supplied .app bytes on $(uname -s)" >&2
     exit 1
   fi
   python3 - <<PY
-import importlib.util, json, os, pathlib, shutil, stat, sys, tempfile
+import importlib.util, json, os, pathlib, shutil, sys, tempfile
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("desktop_release", "scripts/desktop_release.py")
 mod = importlib.util.module_from_spec(spec)
@@ -336,8 +344,15 @@ assert current == manifest["content_digest"]
 assert dest.parent.resolve() == (root / "releases").resolve()
 assert not (dest / "live").exists()
 producer = dest / "candidate" / "unsigned" / "producer-leftover.json"
-assert producer.is_file()
-assert json.loads(producer.read_text())["id"] == "mac-controlled-candidate-producer"
+assert producer.is_file(), f"producer leftover missing on {sys.platform}"
+leftover = json.loads(producer.read_text())
+assert leftover["id"] == "mac-controlled-candidate-producer"
+assert leftover["status"] == "needed"
+assert leftover.get("stage") == 3
+assert leftover.get("attestation_class") == "self-attested-disabled"
+assert leftover.get("platform") == sys.platform
+assert "hard-disabled" in leftover["reason"]
+assert not (dest / "candidate" / "unsigned" / "build-provenance.json").exists()
 
 # Pointer traversal
 bad_root = pathlib.Path(tempfile.mkdtemp())
@@ -379,8 +394,59 @@ except SystemExit:
     pass
 after = list((tamper_dest / "candidate").rglob("*")) if (tamper_dest / "candidate").exists() else []
 assert after == before, "authenticator failure wrote evidence"
-data = json.loads((dest / "manifest.json").read_text())
-# restore from the authenticated dest for proof/profile tampers on a fresh copy
+
+# Complete canonical compare: authority-bearing fields
+def tamper_field(field, value, label):
+    copy = pathlib.Path(tempfile.mkdtemp())
+    shutil.copytree(root / "releases", copy / "releases")
+    shutil.copy(root / "current", copy / "current")
+    path = copy / "releases" / current.replace(":", "-") / "manifest.json"
+    body = json.loads(path.read_text())
+    body[field] = value
+    path.write_text(json.dumps(body, indent=2) + "\n")
+    try:
+        mod.authenticate_source_package(copy)
+        raise SystemExit(f"tampered {label} was accepted")
+    except SystemExit as exc:
+        text = str(exc)
+        if field not in text and "canonical" not in text and "authority-bearing" not in text and "does not match" not in text:
+            raise SystemExit(f"tampered {label} failed for the wrong reason: {text}") from exc
+    assert not (copy / "releases" / current.replace(":", "-") / "live").exists()
+
+tamper_field("schema_version", 99, "schema_version")
+tamper_field("frontend", {"mode": "forged"}, "frontend proof")
+tamper_field("state_root", "/tmp/forged-state", "state_root")
+tamper_field("log_root", "/tmp/forged-log", "log_root")
+tamper_field("transport_requires_desktop", True, "transport_requires_desktop")
+tamper_field("lane", "forged-lane", "lane")
+
+extra = pathlib.Path(tempfile.mkdtemp())
+shutil.copytree(root / "releases", extra / "releases")
+shutil.copy(root / "current", extra / "current")
+extra_path = extra / "releases" / current.replace(":", "-") / "manifest.json"
+extra_body = json.loads(extra_path.read_text())
+extra_body["extra_authority"] = True
+extra_path.write_text(json.dumps(extra_body, indent=2) + "\n")
+try:
+    mod.authenticate_source_package(extra)
+    raise SystemExit("extra authority-bearing field was accepted")
+except SystemExit as exc:
+    if "extra" not in str(exc):
+        raise
+missing = pathlib.Path(tempfile.mkdtemp())
+shutil.copytree(root / "releases", missing / "releases")
+shutil.copy(root / "current", missing / "current")
+missing_path = missing / "releases" / current.replace(":", "-") / "manifest.json"
+missing_body = json.loads(missing_path.read_text())
+del missing_body["lane"]
+missing_path.write_text(json.dumps(missing_body, indent=2) + "\n")
+try:
+    mod.authenticate_source_package(missing)
+    raise SystemExit("missing authority-bearing field was accepted")
+except SystemExit as exc:
+    if "missing" not in str(exc) and "lane" not in str(exc):
+        raise
+
 tamper2 = pathlib.Path(tempfile.mkdtemp())
 shutil.copytree(root / "releases", tamper2 / "releases")
 shutil.copy(root / "current", tamper2 / "current")
@@ -394,9 +460,6 @@ try:
 except SystemExit:
     pass
 assert not (t2 / "live").exists()
-(t2 / "profile.json").write_text("{}\n")
-# current still matches dest name but profile bytes differ; proof already broken
-# use a third copy for profile-only tamper
 tamper3 = pathlib.Path(tempfile.mkdtemp())
 shutil.copytree(root / "releases", tamper3 / "releases")
 shutil.copy(root / "current", tamper3 / "current")
@@ -429,6 +492,44 @@ except SystemExit as exc:
     if "stapler" not in str(exc):
         raise
 
+# Descendant write escape via symlink at candidate/evidence or candidate/unsigned
+escaped = pathlib.Path(tempfile.mkdtemp())
+escape_pkg = pathlib.Path(tempfile.mkdtemp())
+shutil.copytree(dest, escape_pkg, dirs_exist_ok=True)
+candidate_dir = escape_pkg / "candidate"
+if candidate_dir.exists() or candidate_dir.is_symlink():
+    shutil.rmtree(candidate_dir) if candidate_dir.is_dir() and not candidate_dir.is_symlink() else candidate_dir.unlink()
+candidate_dir.mkdir()
+(candidate_dir / "evidence").symlink_to(escaped)
+try:
+    mod.write_package_file(escape_pkg, "candidate/evidence/macos-app.json", "{}\n")
+    raise SystemExit("symlink evidence destination was written")
+except SystemExit as exc:
+    if "symlink" not in str(exc):
+        raise
+assert not (escaped / "macos-app.json").exists()
+unsigned_escape = pathlib.Path(tempfile.mkdtemp())
+unsigned_pkg = pathlib.Path(tempfile.mkdtemp())
+shutil.copytree(dest, unsigned_pkg, dirs_exist_ok=True)
+uc = unsigned_pkg / "candidate"
+if uc.exists() or uc.is_symlink():
+    shutil.rmtree(uc) if uc.is_dir() and not uc.is_symlink() else uc.unlink()
+uc.mkdir()
+(uc / "unsigned").symlink_to(unsigned_escape)
+try:
+    mod.write_package_file(unsigned_pkg, "candidate/unsigned/producer-leftover.json", "{}\n")
+    raise SystemExit("symlink unsigned destination was written")
+except SystemExit as exc:
+    if "symlink" not in str(exc):
+        raise
+assert not (unsigned_escape / "producer-leftover.json").exists()
+try:
+    mod.write_package_file(dest, "../escaped.json", "{}\n")
+    raise SystemExit("traversal package write was accepted")
+except SystemExit as exc:
+    if "traversal" not in str(exc) and "relative" not in str(exc):
+        raise
+
 # Missing / wrong embedded resources
 app = pathlib.Path(tempfile.mkdtemp()) / "Buzz.app"
 (app / "Contents/MacOS").mkdir(parents=True)
@@ -453,16 +554,68 @@ evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
 assert evidence["signed"] is False
 assert "receipt" in (evidence.get("reason") or "")
 
-# Wrong executable provenance: embed then bind a different digest
-provenance = mod.embed_profile_and_receipt(app, manifest)
-(dest / "candidate" / "unsigned").mkdir(parents=True, exist_ok=True)
-forged = dict(provenance)
-forged["executable_sha256"] = "sha256:" + ("99" * 32)
-(dest / "candidate" / "unsigned" / "build-provenance.json").write_text(json.dumps(forged, indent=2) + "\n")
+# Self-attesting embed is hard-disabled
+try:
+    mod.embed_profile_and_receipt(app, manifest)
+    raise SystemExit("self-attesting embed manufactured provenance")
+except SystemExit as exc:
+    if "hard-disabled" not in str(exc) and "caller-supplied" not in str(exc):
+        raise
+
+# Receipt present; self-attested / caller-supplied provenance must refuse live/
+exec_digest = mod.sha256_file(app / "Contents/MacOS/Buzz")
+receipt = {
+    "source_commit": manifest["source_commit"],
+    "content_digest": manifest["content_digest"],
+    "compiled_profile_sha256": manifest["compiled_profile_sha256"],
+    "version": "0.0.0-test",
+    "executable_sha256": exec_digest,
+    "provenance_sha256": "sha256:" + ("00" * 32),
+}
+(app / "Contents/Resources/.release/source-receipt.json").write_text(json.dumps(receipt) + "\n")
 evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
 assert evidence["signed"] is False
 assert evidence["provenance_matches"] is False
-assert "provenance" in (evidence.get("reason") or "")
+reason = evidence.get("reason") or ""
+assert "self-attested" in reason or "caller-supplied" in reason
+mod.write_package_file(
+    dest,
+    "candidate/unsigned/build-provenance.json",
+    json.dumps(
+        {
+            "attestation_class": "self-attested",
+            "executable_sha256": exec_digest,
+            "content_digest": manifest["content_digest"],
+            "compiled_profile_sha256": manifest["compiled_profile_sha256"],
+            "source_commit": manifest["source_commit"],
+        },
+        indent=2,
+    )
+    + "\n",
+)
+evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
+assert evidence["signed"] is False
+assert evidence["provenance_matches"] is False
+assert "self-attested" in (evidence.get("reason") or "") or "caller-supplied" in (evidence.get("reason") or "")
+mod.write_package_file(
+    dest,
+    "candidate/unsigned/build-provenance.json",
+    json.dumps(
+        {
+            "attestation_class": "independent-builder-attestation",
+            "builder": "caller-supplied-app",
+            "executable_sha256": exec_digest,
+            "content_digest": manifest["content_digest"],
+            "compiled_profile_sha256": manifest["compiled_profile_sha256"],
+            "source_commit": manifest["source_commit"],
+        },
+        indent=2,
+    )
+    + "\n",
+)
+evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
+assert evidence["signed"] is False
+assert "isolated-mac-lane" in (evidence.get("reason") or "") or "caller-supplied" in (evidence.get("reason") or "")
 
 # Unreadable / unsupported tree entries fail closed
 fifo_dir = pathlib.Path(tempfile.mkdtemp())
@@ -488,8 +641,8 @@ try:
 finally:
     os.chmod(secret, 0o644)
 
-# Successful live admission uses a test-only identity double after auth.
-# It is not compiled and is not an Apple Team ID.
+# SYNTHETIC leftover: injected all-success evidence is not a live proof.
+# live admission fails closed without independent builder attestation.
 def test_pins(_profile=None):
     return {
         "approved_team_id": "TESTONLYID",
@@ -509,6 +662,7 @@ live_evidence = {
     "embedded_profile_matches": True,
     "receipt_matches": True,
     "provenance_matches": True,
+    "provenance_attestation_class": "independent-builder-attestation",
     "bundle_identifier": "xyz.block.buzz.app",
     "team_id": "TESTONLYID",
     "codesign_identity": "Test-Only Identity",
@@ -517,17 +671,38 @@ live_evidence = {
     "executable_sha256": "sha256:" + ("cd" * 32),
     "version": "0.0.0-test",
     "receipt": {"test_only": True},
-    "reason": "test-only live admission after authenticator",
+    "reason": "synthetic leftover: injected all-success evidence",
 }
-live_path = mod.write_live_if_proven(dest, manifest, live_evidence)
-assert live_path.is_file()
-assert (dest / "live" / "manifest.json").is_file()
 try:
     mod.write_live_if_proven(dest, manifest, live_evidence)
-    raise SystemExit("live/ write-once was reopened")
+    raise SystemExit("synthetic all-success evidence wrote live/")
 except SystemExit as exc:
-    if "write-once" not in str(exc):
+    text = str(exc)
+    if "live/" not in text and "self-attested" not in text and "caller-supplied" not in text and "leftover" not in text:
         raise
+assert not (dest / "live").exists(), "synthetic leftover must not write live/"
+PY
+  # Real leftover producer-to-admission path (unsigned). Does not claim live/ is proven.
+  leftover_app=$(mktemp -d)/Buzz.app
+  mkdir -p "$leftover_app/Contents/MacOS"
+  echo unsigned > "$leftover_app/Contents/MacOS/Buzz"
+  if scripts/desktop_release.py local-dev-admit-app --release-root "$auth_root" \
+      --app "$leftover_app" >/dev/null 2>&1; then
+    echo "producer-to-admission leftover path wrote live/ on $(uname -s)" >&2
+    exit 1
+  fi
+  python3 - <<PY
+import json, pathlib
+root = pathlib.Path("$auth_root")
+current = (root / "current").read_text().strip()
+base = root / "releases" / current.replace(":", "-")
+assert not (base / "live").exists()
+evidence = json.loads((base / "candidate" / "evidence" / "macos-app.json").read_text())
+assert evidence["signed"] is False
+assert evidence["notarized"] is False
+leftover = json.loads((base / "candidate" / "unsigned" / "producer-leftover.json").read_text())
+assert leftover["status"] == "needed"
+assert leftover.get("stage") == 3
 PY
   rm -rf "$auth_root"
 )

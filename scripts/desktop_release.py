@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -51,6 +52,10 @@ TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 MAC_LEFTOVER_ID = "mac-packaged-app-build"
 SIGNING_PIN_LEFTOVER_ID = "approved-macos-signing-pin"
 PRODUCER_LEFTOVER_ID = "mac-controlled-candidate-producer"
+INDEPENDENT_ATTESTATION_CLASS = "independent-builder-attestation"
+SELF_ATTESTED_CLASSES = frozenset(
+    {None, "self-attested", "caller-supplied", "manufactured", "self-attested-disabled"}
+)
 CODESIGN = Path("/usr/bin/codesign")
 SPCTL = Path("/usr/sbin/spctl")
 XCRUN = Path("/usr/bin/xcrun")
@@ -502,7 +507,83 @@ def read_pointer(release_root: Path, name: str) -> str | None:
 
 
 def write_pointer(release_root: Path, name: str, digest: str) -> None:
-    pointer_path(release_root, name).write_text(digest + "\n")
+    write_package_file(release_root, name, digest + "\n")
+
+
+def _relative_write_parts(relative_path: str) -> tuple[str, ...]:
+    rel = Path(relative_path)
+    if rel.is_absolute() or rel.anchor:
+        raise SystemExit("package write path must be relative")
+    parts = rel.parts
+    if not parts or any(part in {".", "..", ""} for part in parts):
+        raise SystemExit("package write path traversal denied")
+    return parts
+
+
+def _deny_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"symlink destination denied: {path}")
+
+
+def _require_inside(root: Path, path: Path) -> Path:
+    resolved_root = root.resolve()
+    resolved = path.resolve()
+    if resolved != resolved_root and resolved_root not in resolved.parents:
+        raise SystemExit(f"write escaped the package: {path}")
+    return resolved
+
+
+def mkdir_contained(root: Path, relative_path: str = ".") -> Path:
+    """Create a real directory under root. Deny symlink destinations and escape."""
+    root = Path(root)
+    _deny_symlink(root)
+    if not root.exists() or not root.is_dir():
+        raise SystemExit(f"contained write root is not a real directory: {root}")
+    current = root
+    if relative_path not in {".", ""}:
+        for part in _relative_write_parts(relative_path):
+            nxt = current / part
+            _deny_symlink(nxt)
+            if nxt.exists():
+                if not nxt.is_dir():
+                    raise SystemExit(f"contained path is not a directory: {nxt}")
+            else:
+                os.mkdir(nxt)
+                _deny_symlink(nxt)
+            current = nxt
+    _require_inside(root, current)
+    _deny_symlink(current)
+    return current
+
+
+def write_package_file(package_root: Path, relative_path: str, data: str | bytes) -> Path:
+    """Atomic write under package_root. Deny symlinks, traversal, and escape."""
+    parts = _relative_write_parts(relative_path)
+    parent_rel = str(Path(*parts[:-1])) if len(parts) > 1 else "."
+    parent = mkdir_contained(package_root, parent_rel)
+    dest = parent / parts[-1]
+    _deny_symlink(dest)
+    if dest.exists() and dest.is_dir():
+        raise SystemExit(f"contained write target is a directory: {dest}")
+    payload = data.encode() if isinstance(data, str) else data
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-pkg-", dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _deny_symlink(Path(tmp_name))
+        _deny_symlink(dest)
+        os.replace(tmp_name, dest)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    _deny_symlink(dest)
+    _require_inside(package_root, dest)
+    return dest
 
 
 def digest_dir(release_root: Path, digest: str, *, must_exist: bool = False) -> Path:
@@ -525,6 +606,116 @@ def digest_dir(release_root: Path, digest: str, *, must_exist: bool = False) -> 
     if must_exist and not (dest / "manifest.json").is_file():
         raise SystemExit("authenticated package manifest is missing")
     return dest
+
+
+def source_package_leftovers(signing_pins: dict) -> list[dict]:
+    leftovers = [
+        {
+            "id": MAC_LEFTOVER_ID,
+            "status": "needed",
+            "reason": (
+                "This host cannot produce a signed macOS .app. leftover "
+                "mac-packaged-app-build stays needed until independent "
+                "codesign, compiled Team ID / identity, Gatekeeper, stapler, "
+                "bundle identifier, executable, version, source receipt, and "
+                "embedded profile succeed on this Buzz.app. live/ is not "
+                "written for unsigned evidence. Any Apple-notarized app is not enough."
+            ),
+        }
+    ]
+    if not signing_pins["filled"]:
+        leftovers.append(
+            {
+                "id": SIGNING_PIN_LEFTOVER_ID,
+                "status": "needed",
+                "reason": (
+                    "approved_team_id and approved_codesign_identity are empty. "
+                    "Leftover until the real Team ID is compiled in. "
+                    "Do not invent a Team ID."
+                ),
+            }
+        )
+    leftovers.append(
+        {
+            "id": PRODUCER_LEFTOVER_ID,
+            "status": "needed",
+            "stage": 3,
+            "reason": (
+                "Stage 3 leftover: the self-attesting Mac producer is hard-disabled. "
+                "It must not hash a caller-supplied .app and emit a matching "
+                "receipt plus external provenance. Stage 3 later builds from the "
+                "exact authenticated source in an isolated Mac lane, or consumes "
+                "an independently authenticated builder attestation. Until then, "
+                "admission refuses live/ for self-attested or caller-supplied "
+                "provenance. Do not fake a signed .app."
+            ),
+        }
+    )
+    return leftovers
+
+
+def build_canonical_source_manifest() -> dict:
+    """Reconstruct the complete authority-bearing source package from live source."""
+    profile = load_local_dev_profile()
+    frontend_proof = prove_frontend_dist(load_json(TAURI_CONF))
+    state_root, log_root = default_runtime_roots(profile)
+    for label, path in ("state_root", state_root), ("log_root", log_root):
+        if forbidden_runtime_root(ROOT, Path(path)):
+            raise SystemExit(f"{label} {path} is forbidden")
+    head = require_clean_head()
+    rows = source_tree_rows()
+    digest = content_digest(rows)
+    profile_bytes = compiled_profile_raw()
+    pin = pin_from_compiled_json(profile_bytes)
+    require_manifest_pin_matches_compiled(pin)
+    signing_pins = compiled_macos_signing_pins(profile)
+    return {
+        "schema_version": 1,
+        "profile": LOCAL_DEV_PROFILE_NAME,
+        "source_commit": head,
+        "content_digest": digest,
+        "bundle_identifier": BUNDLE_IDENTIFIER,
+        "keyring_service": PRODUCTION_KEYRING,
+        "relay_ws_url": PRODUCTION_RELAY,
+        "owner_display_prefix": OWNER_DISPLAY_PREFIX,
+        "owner_pin": pin,
+        "compiled_profile_sha256": sha256_bytes(profile_bytes),
+        "frontend": frontend_proof,
+        "state_root": state_root,
+        "log_root": log_root,
+        "buzz_transport": "optional-to-transport",
+        "transport_requires_desktop": False,
+        "desktop_requires_relay": True,
+        "artifacts": {"macos_app": None},
+        "leftovers": source_package_leftovers(signing_pins),
+        "lane": "scripts/desktop_release.py",
+    }
+
+
+def require_complete_manifest_match(stored: dict, canonical: dict) -> None:
+    """Reject missing, extra, or changed authority-bearing fields. Subset hash is not enough."""
+    if not isinstance(stored, dict) or not isinstance(canonical, dict):
+        raise SystemExit("source manifest must be an object")
+    stored_keys = set(stored)
+    canonical_keys = set(canonical)
+    missing = canonical_keys - stored_keys
+    extra = stored_keys - canonical_keys
+    if missing:
+        raise SystemExit(
+            "source manifest missing authority-bearing fields: "
+            + ", ".join(sorted(missing))
+        )
+    if extra:
+        raise SystemExit(
+            "source manifest has extra authority-bearing fields: "
+            + ", ".join(sorted(extra))
+        )
+    for key in sorted(canonical_keys):
+        if stored[key] != canonical[key]:
+            raise SystemExit(
+                f"source manifest field {key} does not match reconstructed "
+                "canonical source"
+            )
 
 
 def authenticate_source_package(release_root: Path) -> tuple[str, Path, dict]:
@@ -551,8 +742,12 @@ def authenticate_source_package(release_root: Path) -> tuple[str, Path, dict]:
     stored_profile = dest / "profile.json"
     if not stored_profile.is_file() or stored_profile.read_bytes() != compiled_profile_raw():
         raise SystemExit("stored profile.json does not match compiled profile JSON bytes")
+    canonical = build_canonical_source_manifest()
+    require_complete_manifest_match(manifest, canonical)
+    stored_frontend = dest / "proofs" / "frontend-dist.json"
+    if not stored_frontend.is_file() or load_json(stored_frontend) != canonical["frontend"]:
+        raise SystemExit("stored frontend proof does not match reconstructed canonical frontend")
     validate_local_dev_manifest(manifest, live=False)
-    prove_frontend_dist(load_json(TAURI_CONF))
     return current, dest, manifest
 
 
@@ -610,6 +805,14 @@ def validate_local_dev_manifest(
                 "executable, version, source receipt, embedded profile, "
                 "and independent codesign/Gatekeeper/stapler"
             )
+        producer_leftover = next(
+            (item for item in leftovers if item.get("id") == PRODUCER_LEFTOVER_ID), None
+        )
+        if producer_leftover is None or producer_leftover.get("status") != "satisfied":
+            raise SystemExit(
+                "live/ refused: mac-controlled-candidate-producer leftover is "
+                "needed; self-attested or caller-supplied provenance is not enough"
+            )
         return
     if leftover.get("status") != "needed":
         raise SystemExit("Linux/source package must leave mac-packaged-app-build needed")
@@ -636,111 +839,42 @@ def package_local_dev(args: argparse.Namespace) -> None:
             f"release root {release_root} must be outside the source checkout "
             "and outside DawsOS reports/ops"
         )
-    profile = load_local_dev_profile()
-    tauri_conf = load_json(TAURI_CONF)
-    frontend_proof = prove_frontend_dist(tauri_conf)
-    state_root, log_root = default_runtime_roots(profile)
-    for label, path in ("state_root", state_root), ("log_root", log_root):
-        if forbidden_runtime_root(ROOT, Path(path)):
-            raise SystemExit(f"{label} {path} is forbidden")
-
-    head = require_clean_head()
+    if getattr(args, "owner_pubkey", None) or getattr(args, "owner_pubkey_sha256", None):
+        raise SystemExit(
+            "owner pin CLI override is forbidden; pin must come from the compiled profile"
+        )
     requested = args.source_commit
+    head = require_clean_head()
     if requested and requested != head:
         raise SystemExit(
             f"source_commit {requested} does not match HEAD {head}; "
             "an arbitrary 40-char SHA is not accepted"
         )
     rows = source_tree_rows()
-    digest = content_digest(rows)
-    if getattr(args, "owner_pubkey", None) or getattr(args, "owner_pubkey_sha256", None):
-        raise SystemExit(
-            "owner pin CLI override is forbidden; pin must come from the compiled profile"
-        )
-    profile_bytes = compiled_profile_raw()
-    pin = pin_from_compiled_json(profile_bytes)
-    require_manifest_pin_matches_compiled(pin)
-    signing_pins = compiled_macos_signing_pins(profile)
-
-    leftovers = [
-        {
-            "id": MAC_LEFTOVER_ID,
-            "status": "needed",
-            "reason": (
-                "This host cannot produce a signed macOS .app. leftover "
-                "mac-packaged-app-build stays needed until independent "
-                "codesign, compiled Team ID / identity, Gatekeeper, stapler, "
-                "bundle identifier, executable, version, source receipt, and "
-                "embedded profile succeed on this Buzz.app. live/ is not "
-                "written for unsigned evidence. Any Apple-notarized app is not enough."
-            ),
-        }
-    ]
-    if not signing_pins["filled"]:
-        leftovers.append(
-            {
-                "id": SIGNING_PIN_LEFTOVER_ID,
-                "status": "needed",
-                "reason": (
-                    "approved_team_id and approved_codesign_identity are empty. "
-                    "Leftover until the real Team ID is compiled in. "
-                    "Do not invent a Team ID."
-                ),
-            }
-        )
-    leftovers.append(
-        {
-            "id": PRODUCER_LEFTOVER_ID,
-            "status": "needed",
-            "reason": (
-                "Controlled Mac candidate producer must embed the compiled "
-                "profile and generated source receipt BEFORE signing, and bind "
-                "the executable to authenticated build provenance. Linux does "
-                "not fake a signed .app. Signed self-declared resources alone "
-                "are not executable provenance."
-            ),
-        }
-    )
-    manifest = {
-        "schema_version": 1,
-        "profile": LOCAL_DEV_PROFILE_NAME,
-        "source_commit": head,
-        "content_digest": digest,
-        "bundle_identifier": BUNDLE_IDENTIFIER,
-        "keyring_service": PRODUCTION_KEYRING,
-        "relay_ws_url": PRODUCTION_RELAY,
-        "owner_display_prefix": OWNER_DISPLAY_PREFIX,
-        "owner_pin": pin,
-        "compiled_profile_sha256": sha256_bytes(profile_bytes),
-        "frontend": frontend_proof,
-        "state_root": state_root,
-        "log_root": log_root,
-        "buzz_transport": "optional-to-transport",
-        "transport_requires_desktop": False,
-        "desktop_requires_relay": True,
-        "artifacts": {"macos_app": None},
-        "leftovers": leftovers,
-        "lane": "scripts/desktop_release.py",
-    }
+    manifest = build_canonical_source_manifest()
+    digest = manifest["content_digest"]
     validate_local_dev_manifest(manifest, live=False)
 
+    dest_name = digest.replace(":", "-")
     dest = digest_dir(release_root, digest)
-    if dest.exists():
+    if dest.exists() or dest.is_symlink():
         raise SystemExit(f"digest directory {dest} already exists; publication is write-once")
-    dest.mkdir(parents=True, exist_ok=False)
-    (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    (dest / "profile.json").write_text(LOCAL_DEV_PROFILE.read_text())
-    proofs = dest / "proofs"
-    proofs.mkdir()
-    (proofs / "frontend-dist.json").write_text(json.dumps(frontend_proof, indent=2) + "\n")
-    (proofs / "source-tree.json").write_text(
-        json.dumps([{"path": rel, "digest": d} for rel, d in rows], indent=2) + "\n"
+    dest = mkdir_contained(release_root, f"releases/{dest_name}")
+    write_package_file(dest, "manifest.json", json.dumps(manifest, indent=2) + "\n")
+    write_package_file(dest, "profile.json", compiled_profile_raw())
+    write_package_file(dest, "proofs/frontend-dist.json", json.dumps(manifest["frontend"], indent=2) + "\n")
+    write_package_file(
+        dest,
+        "proofs/source-tree.json",
+        json.dumps([{"path": rel, "digest": d} for rel, d in rows], indent=2) + "\n",
     )
-    (dest / "artifacts").mkdir()
-    (dest / "artifacts" / "README").write_text(
-        "No Buzz.app is produced on Linux. Leftover: mac-packaged-app-build.\n"
+    write_package_file(
+        dest,
+        "artifacts/README",
+        "No Buzz.app is produced here. Leftover: mac-packaged-app-build.\n"
         "Do not treat any file in this directory as a macOS application.\n"
         "A boolean admit_macos_app_artifact(true) is not proof of a signed app.\n"
+        "The self-attesting Mac producer is hard-disabled (Stage 3 leftover).\n",
     )
     previous = read_pointer(release_root, "current")
     if previous and previous != digest:
@@ -934,6 +1068,7 @@ def macos_signing_evidence(
         "receipt_matches": False,
         "executable_sha256": None,
         "provenance_matches": False,
+        "provenance_attestation_class": None,
         "reason": None,
     }
     if app_path is None:
@@ -1026,10 +1161,21 @@ def macos_signing_evidence(
         return evidence
     evidence["receipt_matches"] = True
     provenance = load_build_provenance(dest) if dest is not None else None
-    if provenance is None:
+    attestation_class = None if provenance is None else provenance.get("attestation_class")
+    evidence["provenance_attestation_class"] = attestation_class
+    if provenance is None or attestation_class in SELF_ATTESTED_CLASSES:
         evidence["reason"] = (
-            "signed self-declared resources are not executable provenance; "
-            "authenticated producer provenance is missing"
+            "self-attested / caller-supplied provenance is not executable "
+            "provenance; refuse live/"
+        )
+        return evidence
+    if attestation_class != INDEPENDENT_ATTESTATION_CLASS:
+        evidence["reason"] = "unsupported provenance attestation class; fail closed"
+        return evidence
+    if provenance.get("builder") != "isolated-mac-lane":
+        evidence["reason"] = (
+            "independent builder attestation must name isolated-mac-lane; "
+            "caller-supplied app bytes are not a builder"
         )
         return evidence
     if (
@@ -1133,28 +1279,40 @@ def proven_macos_artifact(artifact: dict | None) -> bool:
         and bool(artifact.get("receipt"))
         and bool(artifact.get("app_path"))
         and artifact.get("notarization") == "stapler-validate"
+        and artifact.get("provenance_attestation_class") == INDEPENDENT_ATTESTATION_CLASS
     )
 
 
 def write_candidate_evidence(dest: Path, evidence: dict) -> Path:
-    candidate = dest / "candidate" / "evidence"
-    candidate.mkdir(parents=True, exist_ok=True)
-    path = candidate / "macos-app.json"
-    path.write_text(json.dumps(evidence, indent=2) + "\n")
-    return path
+    return write_package_file(
+        dest, "candidate/evidence/macos-app.json", json.dumps(evidence, indent=2) + "\n"
+    )
+
+
+def producer_leftover_needed(source_manifest: dict) -> bool:
+    leftovers = source_manifest.get("leftovers") or []
+    producer = next((item for item in leftovers if item.get("id") == PRODUCER_LEFTOVER_ID), None)
+    return producer is None or producer.get("status") != "satisfied"
 
 
 def write_live_if_proven(dest: Path, source_manifest: dict, evidence: dict) -> Path:
+    provenance = load_build_provenance(dest)
+    attestation_class = None if provenance is None else provenance.get("attestation_class")
     leftover_needed = (
-        not evidence["signed"]
-        or not evidence["notarized"]
+        not evidence.get("signed")
+        or not evidence.get("notarized")
         or not pin_is_compiled(source_manifest.get("owner_pin") or {})
         or not compiled_macos_signing_pins()["filled"]
         or not proven_macos_artifact(evidence)
+        or producer_leftover_needed(source_manifest)
+        or attestation_class in SELF_ATTESTED_CLASSES
+        or attestation_class != INDEPENDENT_ATTESTATION_CLASS
+        or (provenance or {}).get("builder") != "isolated-mac-lane"
     )
     if leftover_needed:
         raise SystemExit(
-            "live/ is write-once for a proven signed and notarized candidate only"
+            "live/ refused: Stage 3 leftover; self-attested or caller-supplied "
+            "provenance cannot write live/"
         )
     live = dict(source_manifest)
     live["artifacts"] = {"macos_app": evidence}
@@ -1162,96 +1320,63 @@ def write_live_if_proven(dest: Path, source_manifest: dict, evidence: dict) -> P
         {
             "id": MAC_LEFTOVER_ID,
             "status": "satisfied",
-            "reason": evidence["reason"],
-        }
+            "reason": evidence.get("reason"),
+        },
+        {
+            "id": PRODUCER_LEFTOVER_ID,
+            "status": "satisfied",
+            "stage": 3,
+            "reason": "independent isolated-mac-lane builder attestation",
+        },
     ]
     validate_local_dev_manifest(live, live=True, source=source_manifest)
     live_dest = dest / "live"
-    if live_dest.exists():
+    if live_dest.exists() or live_dest.is_symlink():
         raise SystemExit(f"{live_dest} already exists; live publication is write-once")
-    live_dest.mkdir()
-    path = live_dest / "manifest.json"
-    path.write_text(json.dumps(live, indent=2) + "\n")
-    return path
+    return write_package_file(dest, "live/manifest.json", json.dumps(live, indent=2) + "\n")
 
 
 def embed_profile_and_receipt(app: Path, manifest: dict) -> dict:
-    """Producer step: embed compiled profile and source receipt BEFORE signing."""
-    info = _read_info_plist(app)
-    if info is None:
-        raise SystemExit("unsigned candidate missing Info.plist")
-    if info.get("CFBundleIdentifier") != BUNDLE_IDENTIFIER:
-        raise SystemExit("unsigned candidate bundle identifier is not xyz.block.buzz.app")
-    executable_name = info.get("CFBundleExecutable")
-    executable = app / "Contents" / "MacOS" / str(executable_name)
-    if not executable_name or not executable.exists():
-        raise SystemExit("unsigned candidate executable is missing")
-    version = info.get("CFBundleShortVersionString") or info.get("CFBundleVersion")
-    if not version:
-        raise SystemExit("unsigned candidate version is missing")
-    executable_digest = sha256_file(executable)
-    embedded = app / APP_EMBEDDED_PROFILE
-    embedded.parent.mkdir(parents=True, exist_ok=True)
-    embedded.write_bytes(compiled_profile_raw())
-    receipt_path = app / APP_SOURCE_RECEIPT
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    provenance = {
-        "executable_sha256": executable_digest,
-        "content_digest": manifest["content_digest"],
-        "compiled_profile_sha256": manifest["compiled_profile_sha256"],
-        "source_commit": manifest["source_commit"],
-        "version": version,
-    }
-    receipt = {
-        "source_commit": manifest["source_commit"],
-        "content_digest": manifest["content_digest"],
-        "compiled_profile_sha256": manifest["compiled_profile_sha256"],
-        "version": version,
-        "executable_sha256": executable_digest,
-        "provenance_sha256": sha256_bytes(provenance_canonical_bytes(provenance)),
-    }
-    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
-    return provenance
+    """Hard-disabled. Do not manufacture provenance from caller-supplied app bytes."""
+    raise SystemExit(
+        "self-attesting producer is hard-disabled; "
+        "do not manufacture provenance from caller-supplied app bytes"
+    )
 
 
 def produce_macos_candidate(args: argparse.Namespace) -> None:
-    """Controlled Mac producer. Embeds profile/receipt before signing. Linux leftover."""
-    current, dest, manifest = authenticate_source_package(args.release_root)
-    unsigned_dir = dest / "candidate" / "unsigned"
-    unsigned_dir.mkdir(parents=True, exist_ok=True)
-    if sys.platform != "darwin":
-        leftover = unsigned_dir / "producer-leftover.json"
-        leftover.write_text(
-            json.dumps(
-                {
-                    "id": PRODUCER_LEFTOVER_ID,
-                    "status": "needed",
-                    "reason": (
-                        "controlled Mac candidate producer leftover; "
-                        "do not fake a signed .app on Linux"
-                    ),
-                    "content_digest": current,
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-        print(leftover)
-        raise SystemExit(
-            "controlled Mac candidate producer leftover; do not fake a signed .app"
-        )
-    if args.unsigned_app is None:
-        raise SystemExit("Mac producer requires --unsigned-app before signing")
-    app = args.unsigned_app.expanduser().resolve()
-    if not app.name.endswith(".app") or not app.exists():
-        raise SystemExit("producer requires a real unsigned .app")
-    provenance = embed_profile_and_receipt(app, manifest)
-    (unsigned_dir / "build-provenance.json").write_text(
-        json.dumps(provenance, indent=2) + "\n"
+    """Hard-disabled self-attesting producer. Stage 3 leftover on every host."""
+    current, dest, _manifest = authenticate_source_package(args.release_root)
+    leftover = {
+        "id": PRODUCER_LEFTOVER_ID,
+        "status": "needed",
+        "stage": 3,
+        "attestation_class": "self-attested-disabled",
+        "reason": (
+            "Stage 3 leftover: controlled Mac candidate producer is hard-disabled. "
+            "It must not hash a caller-supplied .app and emit matching receipt plus "
+            "external provenance. Stage 3 later builds from the exact authenticated "
+            "source in an isolated Mac lane, or consumes an independently "
+            "authenticated builder attestation. Until then, admission refuses live/ "
+            "for self-attested or caller-supplied provenance. Do not fake a signed .app."
+        ),
+        "content_digest": current,
+        "platform": sys.platform,
+    }
+    path = write_package_file(
+        dest,
+        "candidate/unsigned/producer-leftover.json",
+        json.dumps(leftover, indent=2) + "\n",
     )
+    print(path)
+    if args.unsigned_app is not None:
+        raise SystemExit(
+            "self-attesting producer is hard-disabled; "
+            "do not manufacture provenance from caller-supplied app bytes"
+        )
     raise SystemExit(
-        "profile and receipt embedded before signing; producer leftover "
-        "(do not sign, install, or activate; Team ID pin stays empty)"
+        "mac-controlled-candidate-producer leftover (Stage 3); "
+        "self-attesting producer hard-disabled"
     )
 
 
@@ -1278,6 +1403,8 @@ def admit_local_dev_app(args: argparse.Namespace) -> None:
         or not pin_is_compiled(manifest.get("owner_pin") or {})
         or not compiled_macos_signing_pins()["filled"]
         or not proven_macos_artifact(evidence)
+        or producer_leftover_needed(manifest)
+        or evidence.get("provenance_attestation_class") != INDEPENDENT_ATTESTATION_CLASS
     )
     if leftover_needed:
         evidence_path = write_candidate_evidence(dest, evidence)
@@ -1319,7 +1446,7 @@ def main() -> None:
     admit.add_argument("--boolean-true", action="store_true", help="rejected: boolean is not proof")
     produce = sub.add_parser(
         "local-dev-produce-app",
-        help="embed compiled profile and source receipt before signing (Mac leftover)",
+        help="Stage 3 leftover: self-attesting Mac producer is hard-disabled",
     )
     produce.add_argument("--release-root", required=True, type=Path)
     produce.add_argument("--unsigned-app", type=Path, help="unsigned .app to embed into; never signed here")

@@ -17,6 +17,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Desktop release candidate contract
+        run: scripts/test-desktop-release-candidate.sh
       - name: Validate immutable desktop candidate
         if: startsWith(github.event.pull_request.head.ref, 'version-bump/')
         env:
