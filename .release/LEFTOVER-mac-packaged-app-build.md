@@ -16,11 +16,14 @@ admission pins. A signed, notarized `Buzz.app` with identifier
 signing credentials.
 
 A Boolean `admit_macos_app_artifact(true)` is **not** proof of a signed app.
-A bare SHA-256 is also **not** codesign or notarization evidence. `signed`
-and `notarized` stay false, and leftover `mac-packaged-app-build` stays
-`needed`, until a Mac worker supplies structured codesign identity, Team ID,
-notarization/stapling evidence, **and** the artifact digest. Publication is
-write-once: the digest directory must not already exist.
+Caller-supplied identity, Team ID, or notarization strings are **not**
+evidence. `macos_signing_evidence()` must be given a real `.app` path and
+must independently recompute the digest and run `codesign --verify`,
+Team ID display, Gatekeeper `spctl --assess`, and `stapler validate`.
+On Linux this fails closed: `signed`/`notarized` stay false and leftover
+`mac-packaged-app-build` stays `needed`. Incomplete observations are written
+under `candidate/evidence/`. `live/` is write-once for a proven candidate
+only. This leftover does **not** claim a signed Mac app exists.
 
 ## Worker inputs
 
@@ -38,11 +41,15 @@ write-once: the digest directory must not already exist.
 
 1. Content-addressed release directory written **outside** the source checkout
    and **outside** any DawsOS `reports` / `ops` tree.
-2. `artifacts.macos_app.sha256` plus codesign identity, Team ID, and
-   notarization/stapling evidence. Digest alone leaves leftover `needed`.
-3. Leftover `mac-packaged-app-build` status `satisfied` only when that
-   structured evidence is present.
+2. Independent verification of a real `.app` (recomputed digest, codesign,
+   Team ID, Gatekeeper, stapled ticket). Strings and bare hashes are not
+   enough. On Linux this stays fail-closed.
+3. Leftover `mac-packaged-app-build` status `satisfied` and `live/` only
+   when that independent verification succeeds. Unsigned observations stay
+   in `candidate/evidence/`.
 4. Write-once publication (fail if that digest directory already exists).
+   Owner pin comes only from the compiled `.release/local-dev-production.json`.
+   CLI cannot claim `exact` while compiled pins are null.
 
 ## Explicit non-goals
 

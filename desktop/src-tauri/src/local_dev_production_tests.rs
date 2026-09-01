@@ -1,27 +1,8 @@
 use super::*;
+use std::path::Path;
 
 fn other_hex() -> String {
     format!("ffff0000{}", "cd".repeat(28))
-}
-
-fn digest_only_app(digest: &str) -> MacosAppEvidence {
-    MacosAppEvidence {
-        artifact_digest: digest.to_string(),
-        codesign_identity: None,
-        team_id: None,
-        notarization: None,
-        stapled: false,
-    }
-}
-
-fn structured_app(digest: &str) -> MacosAppEvidence {
-    MacosAppEvidence {
-        artifact_digest: digest.to_string(),
-        codesign_identity: Some("Developer ID Application: Example (TEAMID1)".into()),
-        team_id: Some("TEAMID1".into()),
-        notarization: Some("notarization-ticket:example".into()),
-        stapled: true,
-    }
 }
 
 #[test]
@@ -32,7 +13,7 @@ fn in_tree_profile_does_not_invent_an_owner_key() {
     assert_eq!(profile.keyring_service, PRODUCTION_KEYRING_SERVICE);
     assert_eq!(profile.relay_ws_url, PRODUCTION_RELAY_WS_URL);
     assert_eq!(profile.owner_display_prefix, OWNER_DISPLAY_PREFIX);
-    assert_eq!(profile.frontend_dist, FRONTEND_DIST);
+    assert_eq!(profile.frontend_dist, "../dist");
     assert_eq!(profile.buzz_transport, BUZZ_TRANSPORT);
     assert!(profile.owner_pin_required);
     assert!(profile.desktop_requires_relay);
@@ -227,20 +208,25 @@ fn transport_is_not_failed_because_desktop_is_absent() {
         admit_transport(TransportObservation::FailedBecauseDesktopAbsent).deny_case(),
         Some(DenyCase::TransportDesktopOptional)
     );
+    assert_eq!(
+        admit_transport(TransportObservation::Failed {
+            reason: "relay missing",
+        })
+        .deny_case(),
+        Some(DenyCase::TransportDesktopOptional)
+    );
 }
 
 #[test]
-fn digest_is_not_signed_or_notarized_proof() {
-    let digest = format!("sha256:{}", "ab".repeat(32));
+fn digest_and_caller_strings_are_not_signed_or_notarized_proof() {
     assert_eq!(
         admit_macos_app_artifact(None).deny_case(),
         Some(DenyCase::MacAppUnproven)
     );
     assert_eq!(
-        admit_macos_app_artifact(Some(&digest_only_app(&digest))).deny_case(),
+        admit_macos_app_artifact(Some(Path::new("/tmp/not-a-real.app"))).deny_case(),
         Some(DenyCase::MacAppUnproven)
     );
-    assert!(admit_macos_app_artifact(Some(&structured_app(&digest))).is_accept());
 }
 
 #[test]

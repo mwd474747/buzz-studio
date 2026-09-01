@@ -105,11 +105,13 @@ Verification recomputes that digest. Rollback authenticates the target tree
 proof rather than trusting mutable pointer files.
 
 A Linux host cannot produce a signed, notarized `Buzz.app`. Source packages
-record leftover `mac-packaged-app-build`. A boolean `true` or a bare SHA-256
-is not proof of signed/notarized. Leftover stays `needed` until structured
-codesign identity, Team ID, notarization/stapling, and artifact digest exist.
+record leftover `mac-packaged-app-build`. A boolean, a bare SHA-256, or
+caller-supplied identity strings are not proof. `live/` is not written until
+independent codesign, Team ID, Gatekeeper, stapler, and digest succeed on a
+real `.app`. Incomplete observations go under `candidate/evidence/`. The
+owner pin comes only from the compiled profile; CLI cannot override it.
 See `.release/LEFTOVER-mac-packaged-app-build.md`. Do not install or start
-Buzz.app from this flow.
+Buzz.app from this flow. This leftover does not claim a signed Mac app exists.
 
 ### Relay
 

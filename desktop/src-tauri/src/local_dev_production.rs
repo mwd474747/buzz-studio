@@ -10,15 +10,8 @@
 //! display only. The verified 64-hex owner public key or its digest must be
 //! compiled into that JSON; env vars are not a Finder-launched pin. Empty
 //! production pins fail closed.
-//!
-//! Packager-only admission helpers (macos leftover, rollback, runtime paths,
-//! transport observation) are compiled for the contract tests. They are not
-//! dead product surface.
-
-#![cfg_attr(not(test), allow(dead_code))]
 
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
 
 /// Same file `scripts/desktop_release.py` owns under `.release/`.
 const PROFILE_JSON: &str = include_str!("../../../.release/local-dev-production.json");
@@ -28,8 +21,6 @@ pub const PRODUCTION_KEYRING_SERVICE: &str = "buzz-desktop";
 pub const DEBUG_KEYRING_SERVICE: &str = "buzz-desktop-dev";
 pub const PRODUCTION_RELAY_WS_URL: &str = "ws://localhost:3300";
 pub const OWNER_DISPLAY_PREFIX: &str = "ea840b3e";
-pub const FRONTEND_DIST: &str = "../dist";
-pub const MAC_PACKAGED_APP_BUILD_LEFTOVER: &str = "mac-packaged-app-build";
 pub const BUZZ_TRANSPORT: &str = "optional-to-transport";
 
 const PUBKEY_HEX_LEN: usize = 64;
@@ -56,41 +47,39 @@ pub enum DenyCase {
     LockedKeychain,
     ExistingIdentityUnrecoverable,
     OwnerPinMissing,
-    RelayUnavailable,
     RelayMismatch,
-    StatePathForbidden,
-    LogPathForbidden,
-    FrontendDevUrl,
     KeyringServiceMismatch,
     BundleIdentifierMismatch,
+    #[cfg(test)]
+    RelayUnavailable,
+    #[cfg(test)]
+    StatePathForbidden,
+    #[cfg(test)]
+    LogPathForbidden,
+    #[cfg(test)]
+    FrontendDevUrl,
+    #[cfg(test)]
     RollbackUnauthenticated,
+    #[cfg(test)]
     MacAppUnproven,
+    #[cfg(test)]
     TransportDesktopOptional,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityClass {
-    RecoveredExisting { pubkey_hex: String },
-    MigratedExisting { pubkey_hex: String },
-    GeneratedFresh { pubkey_hex: String },
+    RecoveredExisting {
+        pubkey_hex: String,
+    },
+    #[allow(dead_code)]
+    MigratedExisting {
+        pubkey_hex: String,
+    },
+    GeneratedFresh {
+        pubkey_hex: String,
+    },
     ExistingIdentityLost,
     KeyringLocked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelayProbe {
-    Available,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransportObservation {
-    /// Transport is healthy. Desktop may be absent.
-    Ready,
-    /// Transport failed for a reason other than Desktop absence.
-    Failed { reason: &'static str },
-    /// Illegal: transport marked failed only because Desktop is absent.
-    FailedBecauseDesktopAbsent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,10 +89,12 @@ pub enum Verdict {
 }
 
 impl Verdict {
+    #[cfg(test)]
     pub fn is_accept(&self) -> bool {
         matches!(self, Self::Accept { .. })
     }
 
+    #[cfg(test)]
     pub fn deny_case(&self) -> Option<DenyCase> {
         match self {
             Self::Deny { case, .. } => Some(*case),
@@ -117,16 +108,6 @@ impl Verdict {
             Self::Deny { reason, .. } => Err(reason),
         }
     }
-}
-
-/// Structured macOS signing evidence. A bare SHA-256 is not this.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MacosAppEvidence {
-    pub artifact_digest: String,
-    pub codesign_identity: Option<String>,
-    pub team_id: Option<String>,
-    pub notarization: Option<String>,
-    pub stapled: bool,
 }
 
 #[cfg(test)]
@@ -223,10 +204,6 @@ fn normalize_digest(raw: &str) -> Result<String, String> {
         return Err("owner pubkey digest must be sha256:<64 hex>".to_string());
     }
     Ok(format!("sha256:{hex}"))
-}
-
-fn nonempty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// SHA-256 of the 32-byte x-only public key. Used when the full key is pinned
@@ -431,181 +408,6 @@ pub fn admit_relay_configuration(configured: &str) -> Verdict {
     }
 }
 
-pub fn admit_relay(configured: &str, probe: RelayProbe) -> Verdict {
-    let configuration = admit_relay_configuration(configured);
-    if !configuration.is_accept() {
-        return configuration;
-    }
-    match probe {
-        RelayProbe::Available => Verdict::Accept {
-            reason: format!("relay {PRODUCTION_RELAY_WS_URL} probe reported available"),
-        },
-        RelayProbe::Unavailable => Verdict::Deny {
-            case: DenyCase::RelayUnavailable,
-            reason: format!("pinned relay {PRODUCTION_RELAY_WS_URL} is unavailable; fail closed"),
-        },
-    }
-}
-
-pub fn admit_frontend_embed(frontend_dist: Option<&str>, dev_url_active: bool) -> Verdict {
-    if dev_url_active {
-        return Verdict::Deny {
-            case: DenyCase::FrontendDevUrl,
-            reason: "production profile forbids Vite devUrl; embed frontendDist".to_string(),
-        };
-    }
-    match frontend_dist {
-        Some(FRONTEND_DIST) => Verdict::Accept {
-            reason: format!("frontend embedded via frontendDist {FRONTEND_DIST}"),
-        },
-        Some(other) => Verdict::Deny {
-            case: DenyCase::FrontendDevUrl,
-            reason: format!("frontendDist {other:?} is not {FRONTEND_DIST}"),
-        },
-        None => Verdict::Deny {
-            case: DenyCase::FrontendDevUrl,
-            reason: "production profile requires tauri frontendDist".to_string(),
-        },
-    }
-}
-
-/// Desktop is optional to buzz_transport. Transport is required by Desktop.
-pub fn admit_transport(observation: TransportObservation) -> Verdict {
-    match observation {
-        TransportObservation::Ready => Verdict::Accept {
-            reason: "Desktop is optional to buzz_transport; transport is required by Desktop"
-                .to_string(),
-        },
-        TransportObservation::Failed { reason } => Verdict::Deny {
-            case: DenyCase::TransportDesktopOptional,
-            reason: reason.to_string(),
-        },
-        TransportObservation::FailedBecauseDesktopAbsent => Verdict::Deny {
-            case: DenyCase::TransportDesktopOptional,
-            reason: "buzz_transport must not be marked failed solely because Desktop is absent"
-                .to_string(),
-        },
-    }
-}
-
-pub fn admit_macos_app_artifact(evidence: Option<&MacosAppEvidence>) -> Verdict {
-    let Some(evidence) = evidence else {
-        return Verdict::Deny {
-            case: DenyCase::MacAppUnproven,
-            reason: format!(
-                "signed macOS .app requires codesign identity, Team ID, \
-                 notarization/stapling evidence, and artifact digest; \
-                 leftover {MAC_PACKAGED_APP_BUILD_LEFTOVER} stays unsatisfied \
-                 (a boolean or bare SHA-256 is not proof)"
-            ),
-        };
-    };
-    if normalize_digest(&evidence.artifact_digest).is_err() {
-        return Verdict::Deny {
-            case: DenyCase::MacAppUnproven,
-            reason: "macos .app artifact digest must be sha256:<64 hex>".to_string(),
-        };
-    }
-    let identity = nonempty(evidence.codesign_identity.as_deref());
-    let team_id = nonempty(evidence.team_id.as_deref());
-    let notarization = nonempty(evidence.notarization.as_deref());
-    if identity.is_none() || team_id.is_none() || notarization.is_none() || !evidence.stapled {
-        return Verdict::Deny {
-            case: DenyCase::MacAppUnproven,
-            reason: format!(
-                "SHA-256 is not codesign/notarization evidence; leftover \
-                 {MAC_PACKAGED_APP_BUILD_LEFTOVER} remains until codesign \
-                 identity, Team ID, notarization/stapling, and artifact digest \
-                 are all present"
-            ),
-        };
-    }
-    Verdict::Accept {
-        reason: "macos .app has structured codesign, Team ID, notarization, stapling, and digest"
-            .to_string(),
-    }
-}
-
-/// Rollback must authenticate the target tree digest, not a mutable pointer.
-pub fn admit_rollback_target(
-    claimed_target: &str,
-    recomputed_target_digest: &str,
-    current_digest: &str,
-) -> Verdict {
-    if claimed_target == current_digest {
-        return Verdict::Deny {
-            case: DenyCase::RollbackUnauthenticated,
-            reason: "rollback target must not equal the current digest".to_string(),
-        };
-    }
-    if claimed_target != recomputed_target_digest {
-        return Verdict::Deny {
-            case: DenyCase::RollbackUnauthenticated,
-            reason: "rollback target digest does not match the recomputed tree \
-                     (mutable pointer files are not authority)"
-                .to_string(),
-        };
-    }
-    Verdict::Accept {
-        reason: "rollback target tree digest recomputed and authenticated".to_string(),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimePathKind {
-    State,
-    Log,
-}
-
-fn normalize_for_compare(path: &Path) -> PathBuf {
-    path.components().collect()
-}
-
-pub fn path_is_inside(checkout: &Path, candidate: &Path) -> bool {
-    let checkout = normalize_for_compare(checkout);
-    let candidate = normalize_for_compare(candidate);
-    candidate == checkout || candidate.starts_with(&checkout)
-}
-
-fn path_has_component(path: &Path, name: &str) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == name)
-}
-
-fn path_is_forbidden_runtime(checkout: &Path, candidate: &Path) -> bool {
-    if path_is_inside(checkout, candidate) {
-        return true;
-    }
-    let text = candidate.to_string_lossy().to_ascii_lowercase();
-    if text.contains("/reports/ops") || text.ends_with("/reports/ops") {
-        return true;
-    }
-    let has_dawsos =
-        path_has_component(candidate, "DawsOS") || path_has_component(candidate, "dawsos");
-    let has_reports = path_has_component(candidate, "reports");
-    let has_ops = path_has_component(candidate, "ops");
-    has_dawsos && (has_reports || has_ops)
-}
-
-pub fn admit_runtime_path(checkout: &Path, candidate: &Path, kind: RuntimePathKind) -> Verdict {
-    if path_is_forbidden_runtime(checkout, candidate) {
-        let case = match kind {
-            RuntimePathKind::State => DenyCase::StatePathForbidden,
-            RuntimePathKind::Log => DenyCase::LogPathForbidden,
-        };
-        return Verdict::Deny {
-            case,
-            reason: format!(
-                "{kind:?} path {} is inside the source checkout or a DawsOS reports/ops tree",
-                candidate.display()
-            ),
-        };
-    }
-    Verdict::Accept {
-        reason: format!("{kind:?} path is outside checkout and DawsOS reports/ops"),
-    }
-}
-
 /// Boot-time admission after identity resolution. Fail closed; never print nsec.
 /// Relay check is configuration admission, not a health probe.
 pub fn admit_boot_identity(pubkey_hex: &str) -> Result<(), String> {
@@ -664,30 +466,25 @@ pub fn deny_first_launch_generate() -> Result<(), String> {
     if !refuses_first_launch_generate() {
         return Ok(());
     }
-    Err(
-        "local-dev production profile refuses first-launch generate \
-         (no remint; recover the existing owner identity)"
-            .to_string(),
+    admit_identity(
+        &active_profile()?,
+        &IdentityClass::GeneratedFresh {
+            pubkey_hex: String::new(),
+        },
     )
+    .into_result()
 }
 
 pub fn deny_locked_or_lost(locked: bool, lost: bool) -> Result<(), String> {
     if !profile_active() {
         return Ok(());
     }
+    let profile = active_profile()?;
     if locked {
-        return Err(
-            "local-dev production profile fails closed when the production \
-             keyring is locked or unreachable"
-                .to_string(),
-        );
+        return admit_identity(&profile, &IdentityClass::KeyringLocked).into_result();
     }
     if lost {
-        return Err(
-            "local-dev production profile refuses to replace a lost owner \
-             identity (no remint)"
-                .to_string(),
-        );
+        return admit_identity(&profile, &IdentityClass::ExistingIdentityLost).into_result();
     }
     Ok(())
 }
@@ -736,11 +533,17 @@ pub(crate) fn fixture_profile(
         owner_pubkey: owner,
         owner_pubkey_sha256: digest,
         owner_pin_required: true,
-        frontend_dist: FRONTEND_DIST.to_string(),
+        frontend_dist: "../dist".to_string(),
         buzz_transport: BUZZ_TRANSPORT.to_string(),
         desktop_requires_relay: true,
     }
 }
+
+#[cfg(test)]
+#[path = "local_dev_production_contract.rs"]
+mod contract;
+#[cfg(test)]
+pub use contract::*;
 
 #[cfg(test)]
 #[path = "local_dev_production_tests.rs"]

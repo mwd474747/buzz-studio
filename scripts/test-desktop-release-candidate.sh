@@ -118,9 +118,14 @@ git -C "$local_dev" commit -qm 'feat: complete source tree for local-dev digest'
   git checkout -- README.md
 
   owner=ea840b3e$(python3 -c 'print("ab"*28)')
-  scripts/desktop_release.py local-dev-package --release-root "$release_root" --owner-pubkey "$owner"
+  if scripts/desktop_release.py local-dev-package --release-root "$release_root" \
+      --owner-pubkey "$owner" >/dev/null 2>&1; then
+    echo "packager accepted a CLI owner pin override" >&2
+    exit 1
+  fi
+  scripts/desktop_release.py local-dev-package --release-root "$release_root"
   scripts/desktop_release.py local-dev-verify --release-root "$release_root"
-  if scripts/desktop_release.py local-dev-package --release-root "$release_root" --owner-pubkey "$owner" >/dev/null 2>&1; then
+  if scripts/desktop_release.py local-dev-package --release-root "$release_root" >/dev/null 2>&1; then
     echo "packager reopened an existing digest directory" >&2
     exit 1
   fi
@@ -129,7 +134,7 @@ git -C "$local_dev" commit -qm 'feat: complete source tree for local-dev digest'
   echo 'more' >> docs/NOTE.md
   git add docs/NOTE.md
   git commit -qm 'docs: change one file so the complete tree digest moves'
-  scripts/desktop_release.py local-dev-package --release-root "$release_root" --owner-pubkey "$owner"
+  scripts/desktop_release.py local-dev-package --release-root "$release_root"
   second=$(python3 -c 'print(open("'"$release_root"'/current").read().strip())')
   if [[ "$first" == "$second" ]]; then
     echo "complete source-tree digest ignored a tracked file change" >&2
@@ -157,11 +162,15 @@ git -C "$local_dev" commit -qm 'feat: complete source tree for local-dev digest'
     echo "boolean admit_macos_app_artifact(true) was treated as proof" >&2
     exit 1
   fi
-  scripts/desktop_release.py local-dev-admit-app --release-root "$release_root" \
-      --app-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   if scripts/desktop_release.py local-dev-admit-app --release-root "$release_root" \
-      --app-hash sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc >/dev/null 2>&1; then
-    echo "live publication overwrote an existing live digest" >&2
+      --app-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+      --codesign-identity "Developer ID Application: Example (TEAMID1)" >/dev/null 2>&1; then
+    echo "caller-supplied codesign identity was treated as evidence" >&2
+    exit 1
+  fi
+  if scripts/desktop_release.py local-dev-admit-app --release-root "$release_root" \
+      --app-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1; then
+    echo "unsigned admit wrote live/" >&2
     exit 1
   fi
 
@@ -171,7 +180,7 @@ root = pathlib.Path("$release_root")
 current = (root / "current").read_text().strip()
 base = root / "releases" / current.replace(":", "-")
 manifest = json.loads((base / "manifest.json").read_text())
-live = json.loads((base / "live" / "manifest.json").read_text())
+evidence = json.loads((base / "candidate" / "evidence" / "macos-app.json").read_text())
 assert manifest["artifacts"]["macos_app"] is None
 assert manifest["leftovers"][0]["id"] == "mac-packaged-app-build"
 assert manifest["leftovers"][0]["status"] == "needed"
@@ -180,12 +189,38 @@ assert manifest["desktop_requires_relay"] is True
 assert manifest["transport_requires_desktop"] is False
 assert manifest["relay_ws_url"] == "ws://localhost:3300"
 assert manifest["keyring_service"] == "buzz-desktop"
-assert manifest["owner_pin"]["status"] == "exact"
+assert manifest["owner_pin"]["status"] == "unpinned"
+assert manifest["owner_pin"]["admission"] == "fail-closed"
+assert manifest["owner_pin"]["status"] != "exact"
 assert "nsec" not in json.dumps(manifest)
-assert live["leftovers"][0]["status"] == "needed"
-assert live["artifacts"]["macos_app"]["sha256"].startswith("sha256:")
-assert live["artifacts"]["macos_app"]["signed"] is False
-assert live["artifacts"]["macos_app"]["notarized"] is False
+assert not (base / "live").exists()
+assert evidence["signed"] is False
+assert evidence["notarized"] is False
+assert evidence["sha256"] is None or evidence["sha256"].startswith("sha256:")
+PY
+
+  fake_app=$(mktemp -d)/Buzz.app
+  mkdir -p "$fake_app/Contents/MacOS"
+  echo 'not a signed mac app' > "$fake_app/Contents/MacOS/Buzz"
+  if scripts/desktop_release.py local-dev-admit-app --release-root "$release_root" \
+      --app "$fake_app" >/dev/null 2>&1; then
+    echo "unsigned .app path wrote live/" >&2
+    exit 1
+  fi
+  python3 - <<PY
+import json, pathlib
+root = pathlib.Path("$release_root")
+current = (root / "current").read_text().strip()
+base = root / "releases" / current.replace(":", "-")
+evidence = json.loads((base / "candidate" / "evidence" / "macos-app.json").read_text())
+assert evidence["signed"] is False
+assert evidence["notarized"] is False
+assert evidence["stapled"] is False
+assert evidence["codesign_verify"] is False
+assert evidence["gatekeeper"] is False
+assert evidence["sha256"].startswith("sha256:")
+assert not (base / "live").exists()
+assert "do not fake macOS tools" in (evidence.get("reason") or "")
 PY
 
   unpinned=$(mktemp -d)
