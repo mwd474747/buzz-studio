@@ -1000,6 +1000,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "buzz-desktop-immutable-profile"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "buzz-dev-mcp"
 version = "0.1.0"
 dependencies = [

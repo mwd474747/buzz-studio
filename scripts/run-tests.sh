@@ -81,6 +81,9 @@ run_unit_tests() {
   run_test_step "buzz-core tests" \
     cargo test -p buzz-core --lib -- --nocapture
 
+  run_test_step "buzz-desktop-immutable-profile tests" \
+    cargo test -p buzz-desktop-immutable-profile --lib -- --nocapture
+
   run_test_step "buzz-auth unit tests" \
     cargo test -p buzz-auth --lib -- --nocapture
 

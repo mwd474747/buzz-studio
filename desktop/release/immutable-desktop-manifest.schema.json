@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://block.xyz/buzz/desktop/release/immutable-desktop-manifest.schema.json",
+  "title": "Buzz immutable Desktop release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile",
+    "source_commit",
+    "content_digest",
+    "bundle_identifier",
+    "keyring_service",
+    "relay_ws_url",
+    "expected_owner_pubkey_prefix",
+    "frontend",
+    "state_root",
+    "log_root",
+    "rollback_target",
+    "artifacts",
+    "leftovers"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "profile": {
+      "type": "string",
+      "const": "local-dev-production"
+    },
+    "source_commit": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "content_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "bundle_identifier": {
+      "type": "string",
+      "const": "xyz.block.buzz.app"
+    },
+    "keyring_service": {
+      "type": "string",
+      "const": "buzz-desktop"
+    },
+    "relay_ws_url": {
+      "type": "string",
+      "const": "ws://localhost:3300"
+    },
+    "expected_owner_pubkey_prefix": {
+      "type": "string",
+      "const": "ea840b3e"
+    },
+    "frontend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "path", "dev_url_active", "digest"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "const": "frontendDist"
+        },
+        "path": {
+          "type": "string",
+          "const": "../dist"
+        },
+        "dev_url_active": {
+          "type": "boolean",
+          "const": false
+        },
+        "digest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "state_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "log_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rollback_target": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["macos_app"],
+      "properties": {
+        "macos_app": {
+          "type": ["object", "null"]
+        }
+      }
+    },
+    "leftovers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "reason"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "const": "mac-packaged-app-build"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["needed", "satisfied"]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

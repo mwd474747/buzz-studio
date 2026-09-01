@@ -1,0 +1,11 @@
+[package]
+name = "buzz-desktop-immutable-profile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fail-closed immutable local-dev Desktop production profile (no key material)"
+
+[dependencies]
+serde_json.workspace = true

@@ -242,8 +242,17 @@ desktop-release-build target="aarch64-apple-darwin":
     pnpm install
     cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target {{target}}
 
+# Source-only immutable local-dev Desktop package (no install, no Buzz.app on Linux).
+# Usage: just package-immutable-desktop /abs/path/outside/checkout
+package-immutable-desktop release_root:
+    ./scripts/package-immutable-desktop-release.sh {{release_root}}
+
+# Manifest + frontendDist + rollback deny-cases (no live #local-dev, no Mac install).
+test-immutable-desktop-release:
+    ./scripts/test-immutable-desktop-release.sh
+
 # Run desktop checks suitable for CI / pre-push
-desktop-ci: desktop-check desktop-test desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-tauri-test
+desktop-ci: desktop-check desktop-test desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-tauri-test test-immutable-desktop-release
 
 # Seed deterministic channel data for desktop Playwright tests
 desktop-e2e-seed: _ensure-migrations
@@ -263,7 +272,7 @@ desktop-e2e-pre-push: _ensure-migrations
     cd {{desktop_dir}} && pnpm build:e2e && pnpm exec playwright test --only-changed=origin/main
 
 # Run all checks suitable for CI / pre-push (no infra needed)
-ci: check test-unit desktop-test desktop-build desktop-tauri-check desktop-tauri-test web-build mobile-test
+ci: check test-unit desktop-test desktop-build desktop-tauri-check desktop-tauri-test test-immutable-desktop-release web-build mobile-test
 
 # ─── Test ─────────────────────────────────────────────────────────────────────
 
@@ -276,6 +285,7 @@ test-unit:
     #!/usr/bin/env bash
     if command -v cargo-nextest &>/dev/null; then
         cargo nextest run -p buzz-core -p buzz-auth --lib
+        cargo nextest run -p buzz-desktop-immutable-profile --lib
         cargo nextest run -p buzz-voice --lib
         cargo nextest run -p buzz-cli
         # buzz-db migrator/lint tests: pure SQL-parsing unit tests (no infra).
