@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d)
@@ -175,7 +176,7 @@ git -C "$local_dev" commit -qm 'feat: complete source tree for local-dev digest'
   fi
 
   python3 - <<PY
-import json, pathlib
+import importlib.util, json, os, pathlib, sys, tempfile
 root = pathlib.Path("$release_root")
 current = (root / "current").read_text().strip()
 base = root / "releases" / current.replace(":", "-")
@@ -184,19 +185,56 @@ evidence = json.loads((base / "candidate" / "evidence" / "macos-app.json").read_
 assert manifest["artifacts"]["macos_app"] is None
 assert manifest["leftovers"][0]["id"] == "mac-packaged-app-build"
 assert manifest["leftovers"][0]["status"] == "needed"
+assert any(item["id"] == "approved-macos-signing-pin" and item["status"] == "needed" for item in manifest["leftovers"])
 assert manifest["buzz_transport"] == "optional-to-transport"
 assert manifest["desktop_requires_relay"] is True
 assert manifest["transport_requires_desktop"] is False
 assert manifest["relay_ws_url"] == "ws://localhost:3300"
 assert manifest["keyring_service"] == "buzz-desktop"
-assert manifest["owner_pin"]["status"] == "unpinned"
-assert manifest["owner_pin"]["admission"] == "fail-closed"
-assert manifest["owner_pin"]["status"] != "exact"
+assert manifest["owner_pin"]["status"] == "exact+digest"
+assert manifest["owner_pin"]["admission"] == "pinned"
+assert manifest["owner_pin"]["owner_pubkey"] == "ea840b3e14aceac2b09619de28aedda628e79fcb120dea462ed3ccc512875971"
+assert manifest["owner_pin"]["owner_pubkey_sha256"] == "sha256:af3cd8c1007e504b9d0385c0090395f2a4fecef56e34fd91e66301093583637e"
 assert "nsec" not in json.dumps(manifest)
 assert not (base / "live").exists()
 assert evidence["signed"] is False
 assert evidence["notarized"] is False
 assert evidence["sha256"] is None or evidence["sha256"].startswith("sha256:")
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("desktop_release", "scripts/desktop_release.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assert mod.pin_is_compiled(manifest["owner_pin"])
+profile_path = pathlib.Path(".release/local-dev-production.json")
+original = profile_path.read_bytes()
+unpinned = json.loads(original)
+unpinned["owner_pubkey"] = None
+unpinned["owner_pubkey_sha256"] = None
+profile_path.write_text(json.dumps(unpinned, indent=2) + "\n")
+assert not mod.pin_is_compiled(manifest["owner_pin"]), "forged exact pin must deny against unpinned compiled JSON"
+try:
+    mod.require_manifest_pin_matches_compiled(manifest["owner_pin"])
+    raise SystemExit("forged exact manifest pin was accepted against unpinned compiled JSON")
+except SystemExit as exc:
+    text = str(exc)
+    if "forged" not in text and "unpinned" not in text and "does not equal" not in text:
+        raise
+profile_path.write_bytes(original)
+assert mod.pin_is_compiled(manifest["owner_pin"])
+
+left = pathlib.Path(tempfile.mkdtemp())
+right = pathlib.Path(tempfile.mkdtemp())
+(left / "payload").write_text("same")
+(right / "payload").write_text("same")
+(left / "alias").symlink_to("payload")
+os.chmod(right / "payload", 0o600)
+assert mod.sha256_tree(left) != mod.sha256_tree(right)
+clone = pathlib.Path(tempfile.mkdtemp())
+(clone / "payload").write_text("same")
+(clone / "alias").symlink_to("payload")
+os.chmod(clone / "payload", (left / "payload").stat().st_mode)
+assert mod.sha256_tree(left) == mod.sha256_tree(clone)
 PY
 
   fake_app=$(mktemp -d)/Buzz.app
@@ -208,7 +246,7 @@ PY
     exit 1
   fi
   python3 - <<PY
-import json, pathlib
+import json, pathlib, sys
 root = pathlib.Path("$release_root")
 current = (root / "current").read_text().strip()
 base = root / "releases" / current.replace(":", "-")
@@ -220,21 +258,64 @@ assert evidence["codesign_verify"] is False
 assert evidence["gatekeeper"] is False
 assert evidence["sha256"].startswith("sha256:")
 assert not (base / "live").exists()
-assert "do not fake macOS tools" in (evidence.get("reason") or "")
+reason = evidence.get("reason") or ""
+assert reason, "unsigned observation must record a fail-closed reason"
+if sys.platform == "darwin":
+    assert "do not fake macOS tools" not in reason
 PY
 
-  unpinned=$(mktemp -d)
-  git checkout -q HEAD
-  echo extra > docs/UNPINNED.md
-  git add docs/UNPINNED.md
-  git commit -qm 'docs: unpinned source package has no invented owner key'
-  scripts/desktop_release.py local-dev-package --release-root "$unpinned"
-  if scripts/desktop_release.py local-dev-admit-app --release-root "$unpinned" \
-      --app-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1; then
-    echo "live admit succeeded without an owner public-key pin" >&2
+  unrelated=$(mktemp -d)/Unrelated.app
+  mkdir -p "$unrelated/Contents/MacOS" "$unrelated/Contents/Resources/.release"
+  printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict>' \
+    '<key>CFBundleIdentifier</key><string>com.apple.Safari</string>' \
+    '<key>CFBundleExecutable</key><string>Safari</string>' \
+    '<key>CFBundleShortVersionString</key><string>1.0.0</string>' \
+    '</dict></plist>' > "$unrelated/Contents/Info.plist"
+  echo fake > "$unrelated/Contents/MacOS/Safari"
+  echo '{"notarized":true}' > "$unrelated/Contents/Resources/.release/source-receipt.json"
+  if scripts/desktop_release.py local-dev-admit-app --release-root "$release_root" \
+      --app "$unrelated" >/dev/null 2>&1; then
+    echo "unrelated Apple-notarized-looking app wrote live/" >&2
     exit 1
   fi
-  rm -rf "$unpinned"
+  python3 - <<PY
+import json, pathlib
+root = pathlib.Path("$release_root")
+current = (root / "current").read_text().strip()
+base = root / "releases" / current.replace(":", "-")
+evidence = json.loads((base / "candidate" / "evidence" / "macos-app.json").read_text())
+assert evidence["signed"] is False
+assert evidence["notarized"] is False
+assert evidence["bundle_identifier"] == "com.apple.Safari"
+assert "xyz.block.buzz.app" in (evidence.get("reason") or "")
+assert not (base / "live").exists()
+PY
+
+  rm -rf scripts/__pycache__
+  still_unsigned=$(mktemp -d)
+  git checkout -q HEAD
+  echo extra > docs/STILL-UNSIGNED.md
+  git add docs/STILL-UNSIGNED.md
+  git commit -qm 'docs: compiled owner pin still cannot write unsigned live/'
+  scripts/desktop_release.py local-dev-package --release-root "$still_unsigned"
+  if scripts/desktop_release.py local-dev-admit-app --release-root "$still_unsigned" \
+      --app-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1; then
+    echo "unsigned admit wrote live/ after compiled owner pin" >&2
+    exit 1
+  fi
+  python3 - <<PY
+import json, pathlib
+root = pathlib.Path("$still_unsigned")
+current = (root / "current").read_text().strip()
+base = root / "releases" / current.replace(":", "-")
+assert not (base / "live").exists()
+manifest = json.loads((base / "manifest.json").read_text())
+assert manifest["owner_pin"]["status"] == "exact+digest"
+PY
+  rm -rf "$still_unsigned"
 )
 
 echo "desktop release candidate contract passed"

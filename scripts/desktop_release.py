@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import plistlib
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -44,8 +47,31 @@ TAURI_CONF = ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 PUBKEY_RE = re.compile(r"^[0-9a-f]{64}$")
+TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 MAC_LEFTOVER_ID = "mac-packaged-app-build"
+SIGNING_PIN_LEFTOVER_ID = "approved-macos-signing-pin"
 LOCAL_DEV_PROFILE_NAME = "local-dev-production"
+LIVE_IMMUTABLE_FIELDS = (
+    "schema_version",
+    "profile",
+    "source_commit",
+    "content_digest",
+    "bundle_identifier",
+    "keyring_service",
+    "relay_ws_url",
+    "owner_display_prefix",
+    "owner_pin",
+    "frontend",
+    "state_root",
+    "log_root",
+    "buzz_transport",
+    "transport_requires_desktop",
+    "desktop_requires_relay",
+    "lane",
+    "compiled_profile_sha256",
+)
+APP_EMBEDDED_PROFILE = Path("Contents/Resources/.release/local-dev-production.json")
+APP_SOURCE_RECEIPT = Path("Contents/Resources/.release/source-receipt.json")
 BUNDLE_IDENTIFIER = "xyz.block.buzz.app"
 PRODUCTION_KEYRING = "buzz-desktop"
 PRODUCTION_RELAY = "ws://localhost:3300"
@@ -305,6 +331,14 @@ def load_local_dev_profile() -> dict:
         raise SystemExit("desktop_requires_relay must be true")
     if profile.get("owner_pin_required") is not True:
         raise SystemExit("production profile pin is required")
+    if profile.get("macos_signing_pin_required") is not True:
+        raise SystemExit("macos signing pin is required and must fail closed when empty")
+    for key in ("approved_team_id", "approved_codesign_identity"):
+        value = profile.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise SystemExit(f"{key} must be a non-empty string or null")
     return profile
 
 
@@ -346,6 +380,10 @@ def normalize_owner_pubkey(value: str) -> str:
     return hex_part
 
 
+def compiled_profile_raw() -> bytes:
+    return LOCAL_DEV_PROFILE.read_bytes()
+
+
 def compiled_owner_pin(profile: dict) -> dict:
     """Pin comes only from the compiled in-tree profile. CLI/env cannot claim exact."""
     import hashlib
@@ -375,10 +413,64 @@ def compiled_owner_pin(profile: dict) -> dict:
     return pin
 
 
-def pin_is_compiled(pin: dict) -> bool:
-    return pin.get("status") not in {None, "unpinned", "missing"} and bool(
-        pin.get("owner_pubkey") or pin.get("owner_pubkey_sha256")
+def pin_from_compiled_json(raw: bytes | None = None) -> dict:
+    return compiled_owner_pin(json.loads(raw if raw is not None else compiled_profile_raw()))
+
+
+def pin_equals_compiled(pin: dict, compiled: dict) -> bool:
+    return (
+        pin.get("owner_pubkey") == compiled.get("owner_pubkey")
+        and pin.get("owner_pubkey_sha256") == compiled.get("owner_pubkey_sha256")
+        and pin.get("status") == compiled.get("status")
+        and pin.get("admission") == compiled.get("admission")
     )
+
+
+def pin_is_compiled(pin: dict) -> bool:
+    """True only when pin equals the pin derived from compiled profile JSON bytes."""
+    raw = compiled_profile_raw()
+    try:
+        compiled = pin_from_compiled_json(raw)
+    except SystemExit:
+        return False
+    if compiled.get("status") in {None, "unpinned", "missing"}:
+        return False
+    if not (compiled.get("owner_pubkey") or compiled.get("owner_pubkey_sha256")):
+        return False
+    return pin_equals_compiled(pin, compiled)
+
+
+def require_manifest_pin_matches_compiled(pin: dict) -> dict:
+    raw = compiled_profile_raw()
+    compiled = pin_from_compiled_json(raw)
+    if pin.get("status") in {"exact", "digest", "exact+digest"} and compiled.get("status") == "unpinned":
+        raise SystemExit("forged exact manifest pin denied; compiled profile JSON is unpinned")
+    if not pin_equals_compiled(pin, compiled):
+        raise SystemExit("manifest owner pin does not equal the compiled profile JSON")
+    return compiled
+
+
+def compiled_macos_signing_pins(profile: dict | None = None) -> dict:
+    data = profile if profile is not None else json.loads(compiled_profile_raw())
+    team = data.get("approved_team_id")
+    identity = data.get("approved_codesign_identity")
+    team = str(team).strip() if isinstance(team, str) and team.strip() else None
+    identity = str(identity).strip() if isinstance(identity, str) and identity.strip() else None
+    if team and not TEAM_ID_RE.fullmatch(team):
+        raise SystemExit("approved_team_id must be a 10-char Apple Team ID or null")
+    filled = bool(team and identity)
+    return {
+        "approved_team_id": team,
+        "approved_codesign_identity": identity,
+        "required": data.get("macos_signing_pin_required") is True,
+        "filled": filled,
+    }
+
+
+def require_live_immutable_equals_source(source: dict, live: dict) -> None:
+    for key in LIVE_IMMUTABLE_FIELDS:
+        if live.get(key) != source.get(key):
+            raise SystemExit(f"live manifest immutable field {key} drifted from source")
 
 
 def default_runtime_roots(profile: dict) -> tuple[str, str]:
@@ -411,7 +503,9 @@ def digest_dir(release_root: Path, digest: str) -> Path:
     return release_root / "releases" / digest.replace(":", "-")
 
 
-def validate_local_dev_manifest(manifest: dict, *, live: bool) -> None:
+def validate_local_dev_manifest(
+    manifest: dict, *, live: bool, source: dict | None = None
+) -> None:
     if manifest.get("profile") != LOCAL_DEV_PROFILE_NAME:
         raise SystemExit("manifest profile drifted")
     if manifest.get("bundle_identifier") != BUNDLE_IDENTIFIER:
@@ -426,6 +520,10 @@ def validate_local_dev_manifest(manifest: dict, *, live: bool) -> None:
         raise SystemExit("manifest source_commit must be a full 40-char SHA")
     if not DIGEST_RE.fullmatch(str(manifest.get("content_digest", ""))):
         raise SystemExit("manifest content_digest must be sha256:<64 hex>")
+    if not DIGEST_RE.fullmatch(str(manifest.get("compiled_profile_sha256", ""))):
+        raise SystemExit("manifest compiled_profile_sha256 must be sha256:<64 hex>")
+    if manifest["compiled_profile_sha256"] != sha256_bytes(compiled_profile_raw()):
+        raise SystemExit("manifest compiled_profile_sha256 does not match compiled JSON bytes")
     if manifest.get("buzz_transport") != "optional-to-transport":
         raise SystemExit("manifest must keep Desktop optional to buzz_transport")
     if manifest.get("desktop_requires_relay") is not True:
@@ -436,24 +534,41 @@ def validate_local_dev_manifest(manifest: dict, *, live: bool) -> None:
         raise SystemExit(f"manifest must record leftover {MAC_LEFTOVER_ID}")
     macos_app = (manifest.get("artifacts") or {}).get("macos_app")
     pin = manifest.get("owner_pin") or {}
-    if pin.get("status") in {"exact", "digest", "exact+digest"} and not pin_is_compiled(pin):
-        raise SystemExit("manifest must not claim an exact pin when the compiled profile is unpinned")
+    require_manifest_pin_matches_compiled(pin)
+    signing_pins = compiled_macos_signing_pins()
+    signing_leftover = next(
+        (item for item in leftovers if item.get("id") == SIGNING_PIN_LEFTOVER_ID), None
+    )
     if live:
+        if source is None:
+            raise SystemExit("live validation requires the source manifest")
+        require_live_immutable_equals_source(source, manifest)
         if leftover.get("status") != "satisfied":
             raise SystemExit("live/ is only for a proven candidate; leftover must be satisfied")
         if not pin_is_compiled(pin):
             raise SystemExit("live package admission fails closed without a compiled owner public-key pin")
+        if not signing_pins["filled"]:
+            raise SystemExit(
+                "live/ requires compiled approved_team_id and approved_codesign_identity"
+            )
         if not proven_macos_artifact(macos_app):
             raise SystemExit(
-                "live/ requires independent codesign, Team ID, Gatekeeper, stapler, and digest"
+                "live/ requires this bundle's identifier, compiled signing pin, "
+                "executable, version, source receipt, embedded profile, "
+                "and independent codesign/Gatekeeper/stapler"
             )
         return
     if leftover.get("status") != "needed":
         raise SystemExit("Linux/source package must leave mac-packaged-app-build needed")
     if macos_app is not None:
         raise SystemExit("source-only package must not claim a macOS .app artifact")
-    if pin.get("status") == "exact" and not pin_is_compiled(pin):
-        raise SystemExit("compiled pins are null; manifest must not say exact")
+    if not signing_pins["filled"] and (
+        signing_leftover is None or signing_leftover.get("status") != "needed"
+    ):
+        raise SystemExit(
+            "empty approved Team ID / identity pin must leave "
+            f"{SIGNING_PIN_LEFTOVER_ID} needed"
+        )
 
 
 def package_local_dev(args: argparse.Namespace) -> None:
@@ -484,7 +599,10 @@ def package_local_dev(args: argparse.Namespace) -> None:
         raise SystemExit(
             "owner pin CLI override is forbidden; pin must come from the compiled profile"
         )
-    pin = compiled_owner_pin(profile)
+    profile_bytes = compiled_profile_raw()
+    pin = pin_from_compiled_json(profile_bytes)
+    require_manifest_pin_matches_compiled(pin)
+    signing_pins = compiled_macos_signing_pins(profile)
 
     leftovers = [
         {
@@ -493,11 +611,25 @@ def package_local_dev(args: argparse.Namespace) -> None:
             "reason": (
                 "This host cannot produce a signed macOS .app. leftover "
                 "mac-packaged-app-build stays needed until independent "
-                "codesign, Team ID, Gatekeeper, stapler, and digest succeed "
-                "on a real .app. live/ is not written for unsigned evidence."
+                "codesign, compiled Team ID / identity, Gatekeeper, stapler, "
+                "bundle identifier, executable, version, source receipt, and "
+                "embedded profile succeed on this Buzz.app. live/ is not "
+                "written for unsigned evidence. Any Apple-notarized app is not enough."
             ),
         }
     ]
+    if not signing_pins["filled"]:
+        leftovers.append(
+            {
+                "id": SIGNING_PIN_LEFTOVER_ID,
+                "status": "needed",
+                "reason": (
+                    "approved_team_id and approved_codesign_identity are empty. "
+                    "Leftover for Mike/Codex to fill the real Team ID. "
+                    "Do not invent a Team ID."
+                ),
+            }
+        )
     manifest = {
         "schema_version": 1,
         "profile": LOCAL_DEV_PROFILE_NAME,
@@ -508,6 +640,7 @@ def package_local_dev(args: argparse.Namespace) -> None:
         "relay_ws_url": PRODUCTION_RELAY,
         "owner_display_prefix": OWNER_DISPLAY_PREFIX,
         "owner_pin": pin,
+        "compiled_profile_sha256": sha256_bytes(profile_bytes),
         "frontend": frontend_proof,
         "state_root": state_root,
         "log_root": log_root,
@@ -578,15 +711,18 @@ def verify_local_dev(args: argparse.Namespace) -> None:
             f"{manifest['source_commit']}"
         )
     prove_frontend_dist(load_json(TAURI_CONF))
+    stored_profile = dest / "profile.json"
+    if stored_profile.read_bytes() != compiled_profile_raw():
+        raise SystemExit("stored profile.json does not match compiled profile JSON bytes")
     live_dest = dest / "live"
     if live_dest.is_dir():
         live_manifest = load_json(live_dest / "manifest.json")
-        validate_local_dev_manifest(live_manifest, live=True)
+        validate_local_dev_manifest(live_manifest, live=True, source=manifest)
         artifact = (live_manifest.get("artifacts") or {}).get("macos_app") or {}
         app_path = artifact.get("app_path")
         if not app_path:
             raise SystemExit("live/ manifest is missing the real .app path")
-        evidence = macos_signing_evidence(Path(app_path))
+        evidence = macos_signing_evidence(Path(app_path), source_manifest=manifest)
         if not evidence["signed"] or not evidence["notarized"]:
             raise SystemExit(
                 "live/ artifact failed independent re-verification; "
@@ -620,18 +756,46 @@ def rollback_local_dev(args: argparse.Namespace) -> None:
     print(target)
 
 
-TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
+def _entry_mode(path: Path) -> str:
+    return format(stat.S_IMODE(path.lstat().st_mode), "03o")
 
 
 def sha256_tree(path: Path) -> str:
-    if path.is_file():
-        return sha256_file(path)
+    """Digest a bundle tree including regular files, symlinks, and modes."""
     rows: list[tuple[str, str]] = []
-    for child in sorted(path.rglob("*")):
-        if child.is_file() and not child.is_symlink():
-            rows.append((str(child.relative_to(path)), sha256_file(child)))
-    if not rows:
+
+    def record(rel: str, kind: str, entry: Path, payload: str) -> None:
+        rows.append((rel, f"{kind}:{_entry_mode(entry)}:{payload}"))
+
+    if path.is_symlink():
+        record(".", "symlink", path, os.readlink(path))
+        return content_digest(rows)
+    if path.is_file():
+        record(".", "file", path, sha256_file(path))
+        return content_digest(rows)
+    if not path.is_dir():
         return sha256_bytes(path.as_posix().encode())
+
+    def walk(current: Path) -> None:
+        try:
+            names = sorted(os.listdir(current))
+        except OSError:
+            return
+        for name in names:
+            child = current / name
+            rel = str(child.relative_to(path))
+            st = child.lstat()
+            if stat.S_ISLNK(st.st_mode):
+                record(rel, "symlink", child, os.readlink(child))
+            elif stat.S_ISREG(st.st_mode):
+                record(rel, "file", child, sha256_file(child))
+            elif stat.S_ISDIR(st.st_mode):
+                record(rel, "dir", child, "")
+                walk(child)
+
+    walk(path)
+    if not rows:
+        record(".", "dir", path, "")
     return content_digest(rows)
 
 
@@ -639,8 +803,22 @@ def _run_macos_tool(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
-def macos_signing_evidence(app_path: Path | None) -> dict:
-    """Independently inspect a real .app. Caller strings never set signed/notarized."""
+def _read_info_plist(app: Path) -> dict | None:
+    plist_path = app / "Contents" / "Info.plist"
+    if not plist_path.is_file():
+        return None
+    try:
+        with plist_path.open("rb") as handle:
+            data = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def macos_signing_evidence(
+    app_path: Path | None, *, source_manifest: dict | None = None
+) -> dict:
+    """Independently inspect a real Buzz.app. Caller strings never set signed/notarized."""
     evidence: dict = {
         "app_path": None,
         "sha256": None,
@@ -652,6 +830,12 @@ def macos_signing_evidence(app_path: Path | None) -> dict:
         "stapled": False,
         "codesign_verify": False,
         "gatekeeper": False,
+        "bundle_identifier": None,
+        "executable": None,
+        "version": None,
+        "receipt": None,
+        "embedded_profile_matches": False,
+        "receipt_matches": False,
         "reason": None,
     }
     if app_path is None:
@@ -667,19 +851,96 @@ def macos_signing_evidence(app_path: Path | None) -> dict:
         evidence["reason"] = "path is not a .app bundle; fail closed"
         return evidence
     evidence["sha256"] = sha256_tree(resolved)
-    if sys.platform != "darwin":
+
+    signing_pins = compiled_macos_signing_pins()
+    info = _read_info_plist(resolved)
+    if info is None:
+        evidence["reason"] = "Info.plist missing or unreadable; fail closed"
+        return evidence
+    bundle_id = info.get("CFBundleIdentifier")
+    evidence["bundle_identifier"] = bundle_id
+    if bundle_id != BUNDLE_IDENTIFIER:
         evidence["reason"] = (
-            "this host cannot run codesign, spctl, or stapler; "
-            "fail closed (do not fake macOS tools)"
+            f"bundle identifier {bundle_id!r} is not {BUNDLE_IDENTIFIER}; "
+            "an unrelated Apple-notarized app is not admitted"
         )
         return evidence
-    verify = _run_macos_tool(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(resolved)])
+    executable_name = info.get("CFBundleExecutable")
+    if not executable_name:
+        evidence["reason"] = "CFBundleExecutable missing; fail closed"
+        return evidence
+    executable = resolved / "Contents" / "MacOS" / str(executable_name)
+    if not executable.exists():
+        evidence["reason"] = f"bundle executable {executable} missing; fail closed"
+        return evidence
+    evidence["executable"] = str(executable)
+    version = info.get("CFBundleShortVersionString") or info.get("CFBundleVersion")
+    evidence["version"] = version
+    if not version:
+        evidence["reason"] = "bundle version missing; fail closed"
+        return evidence
+
+    embedded = resolved / APP_EMBEDDED_PROFILE
+    if not embedded.is_file() or embedded.read_bytes() != compiled_profile_raw():
+        evidence["reason"] = (
+            "embedded production profile missing or does not match compiled JSON bytes"
+        )
+        return evidence
+    evidence["embedded_profile_matches"] = True
+
+    receipt_path = resolved / APP_SOURCE_RECEIPT
+    if not receipt_path.is_file():
+        evidence["reason"] = "source/build receipt missing; fail closed"
+        return evidence
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        evidence["reason"] = "source/build receipt is not JSON; fail closed"
+        return evidence
+    evidence["receipt"] = receipt
+    if not isinstance(receipt, dict):
+        evidence["reason"] = "source/build receipt must be an object"
+        return evidence
+    if receipt.get("version") != version:
+        evidence["reason"] = "receipt version does not match Info.plist version"
+        return evidence
+    if receipt.get("compiled_profile_sha256") != sha256_bytes(compiled_profile_raw()):
+        evidence["reason"] = "receipt compiled_profile_sha256 does not match compiled JSON"
+        return evidence
+    if source_manifest is not None:
+        if receipt.get("source_commit") != source_manifest.get("source_commit"):
+            evidence["reason"] = "receipt source_commit does not match the source manifest"
+            return evidence
+        if receipt.get("content_digest") != source_manifest.get("content_digest"):
+            evidence["reason"] = "receipt content_digest does not match the source manifest"
+            return evidence
+        if receipt.get("compiled_profile_sha256") != source_manifest.get("compiled_profile_sha256"):
+            evidence["reason"] = "receipt profile digest does not match the source manifest"
+            return evidence
+    evidence["receipt_matches"] = True
+
+    if not signing_pins["filled"]:
+        evidence["reason"] = (
+            "approved_team_id / approved_codesign_identity compiled pins are empty; "
+            f"leftover {SIGNING_PIN_LEFTOVER_ID} stays needed "
+            "(do not invent a Team ID; do not admit any Apple-notarized app)"
+        )
+        return evidence
+
+    if sys.platform != "darwin":
+        evidence["reason"] = (
+            "this host cannot run codesign, spctl, or stapler; fail closed"
+        )
+        return evidence
+    verify = _run_macos_tool(
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(resolved)]
+    )
     evidence["codesign_verify"] = verify.returncode == 0
     if verify.returncode != 0:
         evidence["reason"] = "codesign --verify failed"
         return evidence
-    info = _run_macos_tool(["codesign", "--display", "--verbose=4", str(resolved)])
-    text = f"{info.stderr}\n{info.stdout}"
+    display = _run_macos_tool(["codesign", "--display", "--verbose=4", str(resolved)])
+    text = f"{display.stderr}\n{display.stdout}"
     team_id = None
     identity = None
     for line in text.splitlines():
@@ -689,6 +950,14 @@ def macos_signing_evidence(app_path: Path | None) -> dict:
             identity = line.split("=", 1)[1].strip()
     if not team_id or team_id == "not set" or not TEAM_ID_RE.fullmatch(team_id):
         evidence["reason"] = "Team ID missing or invalid from codesign display"
+        return evidence
+    if team_id != signing_pins["approved_team_id"]:
+        evidence["reason"] = "codesign Team ID does not match the compiled approved_team_id"
+        return evidence
+    if identity != signing_pins["approved_codesign_identity"]:
+        evidence["reason"] = (
+            "codesign identity does not match the compiled approved_codesign_identity"
+        )
         return evidence
     evidence["team_id"] = team_id
     evidence["codesign_identity"] = identity
@@ -708,7 +977,9 @@ def macos_signing_evidence(app_path: Path | None) -> dict:
     evidence["signed"] = True
     evidence["notarized"] = True
     evidence["reason"] = (
-        "independent codesign verify, Team ID, Gatekeeper, and stapler validation succeeded"
+        "independent Buzz.app admission: bundle identifier, compiled signing pin, "
+        "executable, version, source receipt, embedded profile, codesign, "
+        "Gatekeeper, and stapler succeeded"
     )
     return evidence
 
@@ -716,17 +987,26 @@ def macos_signing_evidence(app_path: Path | None) -> dict:
 def proven_macos_artifact(artifact: dict | None) -> bool:
     if not artifact:
         return False
+    signing_pins = compiled_macos_signing_pins()
+    if not signing_pins["filled"]:
+        return False
     return (
         artifact.get("signed") is True
         and artifact.get("notarized") is True
         and artifact.get("stapled") is True
         and artifact.get("codesign_verify") is True
         and artifact.get("gatekeeper") is True
+        and artifact.get("embedded_profile_matches") is True
+        and artifact.get("receipt_matches") is True
+        and artifact.get("bundle_identifier") == BUNDLE_IDENTIFIER
+        and artifact.get("team_id") == signing_pins["approved_team_id"]
+        and artifact.get("codesign_identity") == signing_pins["approved_codesign_identity"]
         and bool(DIGEST_RE.fullmatch(str(artifact.get("sha256") or "")))
-        and bool(artifact.get("team_id"))
-        and bool(artifact.get("codesign_identity"))
-        and bool(artifact.get("notarization"))
+        and bool(artifact.get("executable"))
+        and bool(artifact.get("version"))
+        and bool(artifact.get("receipt"))
         and bool(artifact.get("app_path"))
+        and artifact.get("notarization") == "stapler-validate"
     )
 
 
@@ -751,7 +1031,8 @@ def admit_local_dev_app(args: argparse.Namespace) -> None:
     for forbidden in ("codesign_identity", "team_id", "notarization", "stapled"):
         if getattr(args, forbidden, None):
             raise SystemExit(f"{forbidden} CLI strings are not signing evidence")
-    evidence = macos_signing_evidence(args.app)
+    require_manifest_pin_matches_compiled(manifest.get("owner_pin") or {})
+    evidence = macos_signing_evidence(args.app, source_manifest=manifest)
     if args.app_hash:
         claimed = normalize_digest(args.app_hash)
         if evidence["sha256"] and evidence["sha256"] != claimed:
@@ -763,6 +1044,8 @@ def admit_local_dev_app(args: argparse.Namespace) -> None:
         not evidence["signed"]
         or not evidence["notarized"]
         or not pin_is_compiled(manifest.get("owner_pin") or {})
+        or not compiled_macos_signing_pins()["filled"]
+        or not proven_macos_artifact(evidence)
     )
     if leftover_needed:
         print(evidence_path)
@@ -779,7 +1062,7 @@ def admit_local_dev_app(args: argparse.Namespace) -> None:
             "reason": evidence["reason"],
         }
     ]
-    validate_local_dev_manifest(live, live=True)
+    validate_local_dev_manifest(live, live=True, source=manifest)
     live_dest = dest / "live"
     if live_dest.exists():
         raise SystemExit(f"{live_dest} already exists; live publication is write-once")

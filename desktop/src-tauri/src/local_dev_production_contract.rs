@@ -95,6 +95,17 @@ pub fn admit_macos_app_artifact(app_path: Option<&Path>) -> Verdict {
 }
 
 fn independent_macos_app_evidence(app_path: Option<&Path>) -> Result<String, String> {
+    let profile = load_in_tree_profile()?;
+    if profile.macos_signing_pin_required
+        && (profile.approved_team_id.is_none() || profile.approved_codesign_identity.is_none())
+    {
+        return Err(
+            "approved_team_id / approved_codesign_identity compiled pins are empty; \
+             leftover approved-macos-signing-pin stays needed (do not invent a Team ID; \
+             any Apple-notarized app is not admitted)"
+                .to_string(),
+        );
+    }
     let path = app_path.ok_or_else(|| {
         format!(
             "signed macOS .app requires a real bundle path and independent \
@@ -120,8 +131,7 @@ fn independent_macos_app_evidence(app_path: Option<&Path>) -> Result<String, Str
     }
     Err(format!(
         "this host cannot run codesign, spctl, or stapler; leftover \
-         {MAC_PACKAGED_APP_BUILD_LEFTOVER} stays needed (do not fake \
-         macOS tools)"
+         {MAC_PACKAGED_APP_BUILD_LEFTOVER} stays needed"
     ))
 }
 

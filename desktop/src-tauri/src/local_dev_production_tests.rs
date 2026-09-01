@@ -5,8 +5,13 @@ fn other_hex() -> String {
     format!("ffff0000{}", "cd".repeat(28))
 }
 
+const RATIFIED_OWNER_PUBKEY: &str =
+    "ea840b3e14aceac2b09619de28aedda628e79fcb120dea462ed3ccc512875971";
+const RATIFIED_OWNER_PUBKEY_SHA256: &str =
+    "sha256:af3cd8c1007e504b9d0385c0090395f2a4fecef56e34fd91e66301093583637e";
+
 #[test]
-fn in_tree_profile_does_not_invent_an_owner_key() {
+fn in_tree_profile_carries_the_ratified_owner_pin() {
     let profile = load_in_tree_profile().expect("in-tree profile must parse");
     assert_eq!(profile.profile, "local-dev-production");
     assert_eq!(profile.bundle_identifier, BUNDLE_IDENTIFIER);
@@ -17,12 +22,19 @@ fn in_tree_profile_does_not_invent_an_owner_key() {
     assert_eq!(profile.buzz_transport, BUZZ_TRANSPORT);
     assert!(profile.owner_pin_required);
     assert!(profile.desktop_requires_relay);
-    assert!(profile.owner_pubkey.is_none());
-    assert!(profile.owner_pubkey_sha256.is_none());
+    assert_eq!(profile.owner_pubkey.as_deref(), Some(RATIFIED_OWNER_PUBKEY));
     assert_eq!(
-        admit_owner_pin(&profile).deny_case(),
-        Some(DenyCase::OwnerPinMissing)
+        profile.owner_pubkey_sha256.as_deref(),
+        Some(RATIFIED_OWNER_PUBKEY_SHA256)
     );
+    assert_eq!(
+        owner_pubkey_digest(RATIFIED_OWNER_PUBKEY).unwrap(),
+        RATIFIED_OWNER_PUBKEY_SHA256
+    );
+    assert!(admit_owner_pin(&profile).is_accept());
+    assert!(profile.approved_team_id.is_none());
+    assert!(profile.approved_codesign_identity.is_none());
+    assert!(profile.macos_signing_pin_required);
 }
 
 #[test]
@@ -34,11 +46,12 @@ fn compiled_in_pins_are_not_filled_from_env() {
         Some(value) => std::env::set_var("BUZZ_DESKTOP_OWNER_PUBKEY", value),
         None => std::env::remove_var("BUZZ_DESKTOP_OWNER_PUBKEY"),
     }
-    assert!(profile.owner_pubkey.is_none());
-    assert_eq!(
-        admit_owner_pin(&profile).deny_case(),
-        Some(DenyCase::OwnerPinMissing)
+    assert_eq!(profile.owner_pubkey.as_deref(), Some(RATIFIED_OWNER_PUBKEY));
+    assert_ne!(
+        profile.owner_pubkey.as_deref(),
+        Some(fixture_owner_hex().as_str())
     );
+    assert!(admit_owner_pin(&profile).is_accept());
 }
 
 #[test]

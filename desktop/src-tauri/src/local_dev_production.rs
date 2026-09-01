@@ -5,11 +5,11 @@
 //! crate. It does not mint, import, export, print, or rotate keys. It never
 //! prints `nsec`.
 //!
-//! The in-tree profile (`.release/local-dev-production.json`) does **not**
-//! invent the canonical owner public key. Display prefix `ea840b3e` is for
-//! display only. The verified 64-hex owner public key or its digest must be
-//! compiled into that JSON; env vars are not a Finder-launched pin. Empty
-//! production pins fail closed.
+//! The in-tree profile (`.release/local-dev-production.json`) carries the
+//! ratified `#local-dev` owner public-key pin. Display prefix `ea840b3e` is
+//! for display only. Env vars are not a Finder-launched pin. Approved macOS
+//! Team ID / identity pins stay empty until Mike/Codex fill them; empty
+//! signing pins fail closed. This module does not invent a Team ID.
 
 use sha2::{Digest, Sha256};
 
@@ -35,6 +35,9 @@ pub struct LocalDevProductionProfile {
     pub owner_pubkey: Option<String>,
     pub owner_pubkey_sha256: Option<String>,
     pub owner_pin_required: bool,
+    pub approved_team_id: Option<String>,
+    pub approved_codesign_identity: Option<String>,
+    pub macos_signing_pin_required: bool,
     pub frontend_dist: String,
     pub buzz_transport: String,
     pub desktop_requires_relay: bool,
@@ -181,6 +184,9 @@ fn parse_profile_json(raw: &str) -> Result<LocalDevProductionProfile, String> {
         owner_pubkey: optional_pin("owner_pubkey")?,
         owner_pubkey_sha256: optional_pin("owner_pubkey_sha256")?,
         owner_pin_required: get_bool("owner_pin_required")?,
+        approved_team_id: optional_pin("approved_team_id")?,
+        approved_codesign_identity: optional_pin("approved_codesign_identity")?,
+        macos_signing_pin_required: get_bool("macos_signing_pin_required")?,
         frontend_dist: get_str("frontend_dist")?,
         buzz_transport: get_str("buzz_transport")?,
         desktop_requires_relay: get_bool("desktop_requires_relay")?,
@@ -533,6 +539,9 @@ pub(crate) fn fixture_profile(
         owner_pubkey: owner,
         owner_pubkey_sha256: digest,
         owner_pin_required: true,
+        approved_team_id: None,
+        approved_codesign_identity: None,
+        macos_signing_pin_required: true,
         frontend_dist: "../dist".to_string(),
         buzz_transport: BUZZ_TRANSPORT.to_string(),
         desktop_requires_relay: true,
