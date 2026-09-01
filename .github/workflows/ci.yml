@@ -61,6 +61,7 @@ jobs:
               - 'scripts/test-desktop-release-candidate.sh'
               - '.release/local-dev-production.json'
               - '.release/LEFTOVER-mac-*.md'
+              - '.release/LEFTOVER-historical-package-rollback.md'
               - '.release/SUPERDAWS-OWNER-PIN-RECEIPT.md'
               - '.github/workflows/ci.yml'
               - '.github/workflows/desktop-release-candidate.yml'

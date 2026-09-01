@@ -143,19 +143,63 @@ git -C "$local_dev" commit -qm 'feat: complete source tree for local-dev digest'
   fi
   scripts/desktop_release.py local-dev-verify --release-root "$release_root"
 
+  ln -s NOTE.md docs/ONLY-LINK.md
+  git add docs/ONLY-LINK.md
+  git commit -qm 'docs: symlink-only tree entry'
+  scripts/desktop_release.py local-dev-package --release-root "$release_root"
+  after_symlink=$(python3 -c 'print(open("'"$release_root"'/current").read().strip())')
+  if [[ "$second" == "$after_symlink" ]]; then
+    echo "source digest ignored a symlink-only commit" >&2
+    exit 1
+  fi
+
+  chmod +x crates/buzz-core/lib.rs
+  git add crates/buzz-core/lib.rs
+  git commit -qm 'chore: executable-bit-only tree entry'
+  git ls-tree HEAD -- crates/buzz-core/lib.rs | grep -q '100755'
+  scripts/desktop_release.py local-dev-package --release-root "$release_root"
+  after_mode=$(python3 -c 'print(open("'"$release_root"'/current").read().strip())')
+  if [[ "$after_symlink" == "$after_mode" ]]; then
+    echo "source digest ignored a mode-only commit" >&2
+    exit 1
+  fi
+  scripts/desktop_release.py local-dev-verify --release-root "$release_root"
+
+  before_rollback=$(python3 -c 'print(open("'"$release_root"'/current").read().strip())')
   if scripts/desktop_release.py local-dev-rollback --release-root "$release_root" \
       --target-digest sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff >/dev/null 2>&1; then
-    echo "rollback trusted a digest that is not a published tree" >&2
+    echo "disabled rollback accepted an unpublished digest" >&2
     exit 1
   fi
-  scripts/desktop_release.py local-dev-rollback --release-root "$release_root" --target-digest "$first"
-  current=$(python3 -c 'print(open("'"$release_root"'/current").read().strip())')
-  if [[ "$current" != "$first" ]]; then
-    echo "rollback did not activate the authenticated target tree" >&2
+  if scripts/desktop_release.py local-dev-rollback --release-root "$release_root" \
+      --target-digest "$first" >/dev/null 2>&1; then
+    echo "disabled rollback mutated current onto a historical package" >&2
     exit 1
   fi
-  git checkout -q HEAD~1
-  scripts/desktop_release.py local-dev-verify --release-root "$release_root"
+  after_rollback=$(python3 -c 'print(open("'"$release_root"'/current").read().strip())')
+  if [[ "$before_rollback" != "$after_rollback" ]]; then
+    echo "hard-disabled rollback changed the current pointer" >&2
+    exit 1
+  fi
+  python3 - <<PY
+import json, pathlib
+root = pathlib.Path("$release_root")
+first = pathlib.Path("$first".replace("sha256:", "sha256-"))
+hist = root / "releases" / "$first".replace(":", "-") / "manifest.json"
+body = json.loads(hist.read_text())
+body["schema_version"] = 99
+hist.write_text(json.dumps(body, indent=2) + "\n")
+PY
+  if scripts/desktop_release.py local-dev-rollback --release-root "$release_root" \
+      --target-digest "$first" >/dev/null 2>&1; then
+    echo "rollback moved current onto a tampered historical manifest" >&2
+    exit 1
+  fi
+  still=$(python3 -c 'print(open("'"$release_root"'/current").read().strip())')
+  if [[ "$still" != "$before_rollback" ]]; then
+    echo "tampered historical rollback mutated current" >&2
+    exit 1
+  fi
 
   if scripts/desktop_release.py local-dev-admit-app --release-root "$release_root" \
       --app-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
@@ -187,6 +231,11 @@ assert manifest["leftovers"][0]["id"] == "mac-packaged-app-build"
 assert manifest["leftovers"][0]["status"] == "needed"
 assert any(item["id"] == "approved-macos-signing-pin" and item["status"] == "needed" for item in manifest["leftovers"])
 assert any(item["id"] == "mac-controlled-candidate-producer" and item["status"] == "needed" for item in manifest["leftovers"])
+assert any(item["id"] == "historical-package-rollback" and item["status"] == "needed" for item in manifest["leftovers"])
+assert isinstance(manifest["state_root"], dict) and "macos" in manifest["state_root"]
+assert isinstance(manifest["log_root"], dict) and "linux_test" in manifest["log_root"]
+proof_rows = json.loads((base / "proofs" / "source-tree.json").read_text())
+assert proof_rows and {"path", "type", "mode", "object"} <= set(proof_rows[0])
 assert manifest["buzz_transport"] == "optional-to-transport"
 assert manifest["desktop_requires_relay"] is True
 assert manifest["transport_requires_desktop"] is False
@@ -415,8 +464,8 @@ def tamper_field(field, value, label):
 
 tamper_field("schema_version", 99, "schema_version")
 tamper_field("frontend", {"mode": "forged"}, "frontend proof")
-tamper_field("state_root", "/tmp/forged-state", "state_root")
-tamper_field("log_root", "/tmp/forged-log", "log_root")
+tamper_field("state_root", {"macos": "/tmp/forged-state", "linux_test": "/tmp/forged-state"}, "state_root")
+tamper_field("log_root", {"macos": "/tmp/forged-log", "linux_test": "/tmp/forged-log"}, "log_root")
 tamper_field("transport_requires_desktop", True, "transport_requires_desktop")
 tamper_field("lane", "forged-lane", "lane")
 
@@ -452,7 +501,7 @@ shutil.copytree(root / "releases", tamper2 / "releases")
 shutil.copy(root / "current", tamper2 / "current")
 t2 = tamper2 / "releases" / current.replace(":", "-")
 proof = json.loads((t2 / "proofs" / "source-tree.json").read_text())
-proof[0]["digest"] = "sha256:" + ("11" * 32)
+proof[0]["object"] = "11" * 20
 (t2 / "proofs" / "source-tree.json").write_text(json.dumps(proof) + "\n")
 try:
     mod.authenticate_source_package(tamper2)
@@ -529,6 +578,35 @@ try:
 except SystemExit as exc:
     if "traversal" not in str(exc) and "relative" not in str(exc):
         raise
+
+# Concurrent parent swap must not escape the package
+import threading
+race_root = pathlib.Path(tempfile.mkdtemp())
+race_out = pathlib.Path(tempfile.mkdtemp())
+stop = threading.Event()
+
+def attacker():
+    target = race_root / "a"
+    while not stop.is_set():
+        try:
+            if target.is_symlink():
+                target.unlink()
+            elif target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            target.symlink_to(race_out)
+        except OSError:
+            pass
+
+thread = threading.Thread(target=attacker, daemon=True)
+thread.start()
+for i in range(40):
+    try:
+        mod.write_package_file(race_root, f"a/b/race-{i}.txt", f"{i}\n")
+    except SystemExit:
+        pass
+stop.set()
+thread.join(timeout=2)
+assert not list(race_out.rglob("*")), "descriptor write escaped through a raced symlink parent"
 
 # Missing / wrong embedded resources
 app = pathlib.Path(tempfile.mkdtemp()) / "Buzz.app"
@@ -612,6 +690,7 @@ mod.write_package_file(
         indent=2,
     )
     + "\n",
+    overwrite_regular=True,
 )
 evidence = mod.macos_signing_evidence(app, source_manifest=manifest, dest=dest)
 assert evidence["signed"] is False

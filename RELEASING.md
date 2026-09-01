@@ -101,13 +101,15 @@ Tauri boot path (`desktop/src-tauri`):
 ```sh
 just release-desktop-local-dev-package /var/tmp/buzz-desktop-releases
 just release-desktop-local-dev-verify /var/tmp/buzz-desktop-releases
-just release-desktop-local-dev-rollback /var/tmp/buzz-desktop-releases sha256:<digest>
+# local-dev-rollback is leftover historical-package-rollback (hard-disabled).
 ```
 
-The packager hashes the **complete clean source tree**, requires
-`source_commit == HEAD`, and refuses to reopen an existing digest directory.
-Verification recomputes that digest. Rollback authenticates the target tree
-proof rather than trusting mutable pointer files.
+The packager derives source identity from **Git tree entries** (`git ls-tree`
+path, type, mode, blob/gitlink object), requires `source_commit == HEAD`,
+and refuses to reopen an existing digest directory. Verification recomputes
+that digest. Runtime roots in the source package are platform-neutral
+templates. `local-dev-rollback` is leftover and must not mutate `current`.
+Stage 3 recreates the package on the isolated Mac from the approved commit.
 
 A Linux host cannot produce a signed, notarized `Buzz.app`. Source packages
 record leftover `mac-packaged-app-build`. A boolean, a bare SHA-256, or

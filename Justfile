@@ -735,7 +735,7 @@ release-desktop-local-dev-package release_root:
 release-desktop-local-dev-verify release_root:
     scripts/desktop_release.py local-dev-verify --release-root {{release_root}}
 
-# Roll back to an authenticated target tree digest (not a mutable pointer).
+# Leftover: historical-package-rollback is hard-disabled and must not mutate current.
 release-desktop-local-dev-rollback release_root target_digest:
     scripts/desktop_release.py local-dev-rollback --release-root {{release_root}} --target-digest {{target_digest}}
 

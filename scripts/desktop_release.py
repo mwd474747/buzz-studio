@@ -11,7 +11,6 @@ import re
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +51,14 @@ TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 MAC_LEFTOVER_ID = "mac-packaged-app-build"
 SIGNING_PIN_LEFTOVER_ID = "approved-macos-signing-pin"
 PRODUCER_LEFTOVER_ID = "mac-controlled-candidate-producer"
+ROLLBACK_LEFTOVER_ID = "historical-package-rollback"
+GIT_OBJECT_RE = re.compile(r"^[0-9a-f]{40,64}$")
+GIT_TREE_MODES = {
+    ("blob", "100644"),
+    ("blob", "100755"),
+    ("blob", "120000"),
+    ("commit", "160000"),
+}
 INDEPENDENT_ATTESTATION_CLASS = "independent-builder-attestation"
 SELF_ATTESTED_CLASSES = frozenset(
     {None, "self-attested", "caller-supplied", "manufactured", "self-attested-disabled"}
@@ -299,24 +306,42 @@ def require_clean_head(cwd: Path | None = None) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
 
 
-def source_tree_rows(cwd: Path | None = None) -> list[tuple[str, str]]:
+def source_tree_rows(cwd: Path | None = None) -> list[tuple[str, str, str, str]]:
+    """Git tree identity: path, type, mode, and blob/gitlink object. No working-tree subset."""
     repo = cwd or ROOT
-    out = subprocess.check_output(["git", "ls-files", "-z"], cwd=repo)
-    rows: list[tuple[str, str]] = []
-    for rel in out.split(b"\0"):
-        if not rel:
+    out = subprocess.check_output(
+        ["git", "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+        cwd=repo,
+    )
+    rows: list[tuple[str, str, str, str]] = []
+    for entry in out.split(b"\0"):
+        if not entry:
             continue
-        path = repo / rel.decode()
-        if path.is_file() and not path.is_symlink():
-            rows.append((rel.decode(), sha256_file(path)))
+        if b"\t" not in entry:
+            raise SystemExit("git ls-tree entry is missing a path separator")
+        meta, path_raw = entry.split(b"\t", 1)
+        parts = meta.split(b" ")
+        if len(parts) != 3:
+            raise SystemExit("git ls-tree entry is not mode type object")
+        mode = parts[0].decode()
+        typ = parts[1].decode()
+        obj = parts[2].decode()
+        path = path_raw.decode()
+        if (typ, mode) not in GIT_TREE_MODES:
+            raise SystemExit(f"unsupported git tree entry {typ} {mode} at {path}")
+        if not GIT_OBJECT_RE.fullmatch(obj):
+            raise SystemExit(f"git tree object is not a blob/gitlink id at {path}")
+        if not path or path.startswith("/") or ".." in path.split("/"):
+            raise SystemExit(f"git tree path is not a contained relative path: {path}")
+        rows.append((path, typ, mode, obj))
     rows.sort()
     if not rows:
         raise SystemExit("source tree hash is empty; refuse a selected-file subset")
     return rows
 
 
-def content_digest(rows: list[tuple[str, str]]) -> str:
-    payload = "".join(f"{rel}\0{digest}\n" for rel, digest in rows).encode()
+def content_digest(rows: list[tuple[str, ...]]) -> str:
+    payload = "".join("\0".join(row) + "\n" for row in rows).encode()
     return sha256_bytes(payload)
 
 
@@ -485,12 +510,31 @@ def require_live_immutable_equals_source(source: dict, live: dict) -> None:
 
 
 def default_runtime_roots(profile: dict) -> tuple[str, str]:
+    """Expanded host paths for local forbidden-root checks only. Not authority."""
     if sys.platform == "darwin":
         state = expand_user_path(profile["state_root"]["macos"])
         logs = expand_user_path(profile["log_root"]["macos"])
     else:
         state = expand_user_path(profile["state_root"]["linux_test"])
         logs = expand_user_path(profile["log_root"]["linux_test"])
+    return state, logs
+
+
+def platform_neutral_runtime_roots(profile: dict) -> tuple[dict, dict]:
+    """Source-package roots are templates so Linux and Mac reconstruct the same manifest."""
+    state = profile.get("state_root")
+    logs = profile.get("log_root")
+    if not isinstance(state, dict) or not isinstance(logs, dict):
+        raise SystemExit("state_root and log_root must be platform-neutral template objects")
+    for name, templates in ("state_root", state), ("log_root", logs):
+        if "macos" not in templates or "linux_test" not in templates:
+            raise SystemExit(f"{name} templates must include macos and linux_test")
+        for key, template in templates.items():
+            if not isinstance(template, str) or not template.strip():
+                raise SystemExit(f"{name}.{key} must be a non-empty template string")
+            expanded = expand_user_path(template)
+            if forbidden_runtime_root(ROOT, Path(expanded)):
+                raise SystemExit(f"{name}.{key} {expanded} is forbidden")
     return state, logs
 
 
@@ -507,7 +551,7 @@ def read_pointer(release_root: Path, name: str) -> str | None:
 
 
 def write_pointer(release_root: Path, name: str, digest: str) -> None:
-    write_package_file(release_root, name, digest + "\n")
+    write_package_file(release_root, name, digest + "\n", overwrite_regular=True)
 
 
 def _relative_write_parts(relative_path: str) -> tuple[str, ...]:
@@ -520,70 +564,140 @@ def _relative_write_parts(relative_path: str) -> tuple[str, ...]:
     return parts
 
 
-def _deny_symlink(path: Path) -> None:
-    if path.is_symlink():
-        raise SystemExit(f"symlink destination denied: {path}")
+def _dir_open_flags() -> int:
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise SystemExit("descriptor-anchored writes require O_NOFOLLOW and O_DIRECTORY")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 
 
-def _require_inside(root: Path, path: Path) -> Path:
-    resolved_root = root.resolve()
-    resolved = path.resolve()
-    if resolved != resolved_root and resolved_root not in resolved.parents:
-        raise SystemExit(f"write escaped the package: {path}")
-    return resolved
+def _file_excl_flags() -> int:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SystemExit("descriptor-anchored writes require O_NOFOLLOW")
+    return os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+
+
+def _file_write_flags() -> int:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SystemExit("descriptor-anchored writes require O_NOFOLLOW")
+    return os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+
+
+def _open_dirfd(path: str | None = None, *, dir_fd: int | None = None, name: str | None = None) -> int:
+    flags = _dir_open_flags()
+    try:
+        if dir_fd is None:
+            if path is None:
+                raise SystemExit("directory descriptor root is missing")
+            return os.open(path, flags)
+        if name is None:
+            raise SystemExit("directory descriptor name is missing")
+        return os.open(name, flags, dir_fd=dir_fd)
+    except OSError as exc:
+        raise SystemExit(f"directory descriptor open failed: {exc}") from exc
+
+
+def _mkdirat_open(dir_fd: int, name: str) -> int:
+    try:
+        os.mkdir(name, 0o755, dir_fd=dir_fd)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise SystemExit(f"contained mkdir failed: {exc}") from exc
+    try:
+        existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise SystemExit(f"contained mkdir stat failed: {exc}") from exc
+    if stat.S_ISLNK(existing.st_mode):
+        raise SystemExit(f"symlink destination denied: {name}")
+    if not stat.S_ISDIR(existing.st_mode):
+        raise SystemExit(f"contained path is not a directory: {name}")
+    return _open_dirfd(name=name, dir_fd=dir_fd)
 
 
 def mkdir_contained(root: Path, relative_path: str = ".") -> Path:
-    """Create a real directory under root. Deny symlink destinations and escape."""
+    """Create directories under root via no-follow directory descriptors."""
     root = Path(root)
-    _deny_symlink(root)
-    if not root.exists() or not root.is_dir():
-        raise SystemExit(f"contained write root is not a real directory: {root}")
-    current = root
-    if relative_path not in {".", ""}:
-        for part in _relative_write_parts(relative_path):
-            nxt = current / part
-            _deny_symlink(nxt)
-            if nxt.exists():
-                if not nxt.is_dir():
-                    raise SystemExit(f"contained path is not a directory: {nxt}")
-            else:
-                os.mkdir(nxt)
-                _deny_symlink(nxt)
-            current = nxt
-    _require_inside(root, current)
-    _deny_symlink(current)
-    return current
-
-
-def write_package_file(package_root: Path, relative_path: str, data: str | bytes) -> Path:
-    """Atomic write under package_root. Deny symlinks, traversal, and escape."""
-    parts = _relative_write_parts(relative_path)
-    parent_rel = str(Path(*parts[:-1])) if len(parts) > 1 else "."
-    parent = mkdir_contained(package_root, parent_rel)
-    dest = parent / parts[-1]
-    _deny_symlink(dest)
-    if dest.exists() and dest.is_dir():
-        raise SystemExit(f"contained write target is a directory: {dest}")
-    payload = data.encode() if isinstance(data, str) else data
-    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-pkg-", dir=parent)
+    root_fd = _open_dirfd(str(root))
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        _deny_symlink(Path(tmp_name))
-        _deny_symlink(dest)
-        os.replace(tmp_name, dest)
-    except Exception:
+        if relative_path in {".", ""}:
+            return root
+        current_fd = root_fd
+        for part in _relative_write_parts(relative_path):
+            child_fd = _mkdirat_open(current_fd, part)
+            if current_fd != root_fd:
+                os.close(current_fd)
+            current_fd = child_fd
+        if current_fd != root_fd:
+            os.close(current_fd)
+    finally:
+        os.close(root_fd)
+    return root.joinpath(*_relative_write_parts(relative_path))
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise SystemExit("contained write made no progress")
+        view = view[written:]
+
+
+def write_package_file(
+    package_root: Path,
+    relative_path: str,
+    data: str | bytes,
+    *,
+    overwrite_regular: bool = False,
+) -> Path:
+    """Directory-descriptor-anchored write. No path follow, no os.replace."""
+    parts = _relative_write_parts(relative_path)
+    payload = data.encode() if isinstance(data, str) else data
+    root_fd = _open_dirfd(str(package_root))
+    dir_fd = root_fd
+    try:
+        for part in parts[:-1]:
+            child_fd = _mkdirat_open(dir_fd, part)
+            if dir_fd != root_fd:
+                os.close(dir_fd)
+            dir_fd = child_fd
+        name = parts[-1]
         try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-    _deny_symlink(dest)
-    _require_inside(package_root, dest)
-    return dest
+            fd = os.open(name, _file_excl_flags(), 0o644, dir_fd=dir_fd)
+        except FileExistsError:
+            try:
+                existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise SystemExit(f"contained write stat failed: {exc}") from exc
+            if stat.S_ISLNK(existing.st_mode):
+                raise SystemExit(f"symlink destination denied: {relative_path}")
+            if not overwrite_regular:
+                raise SystemExit("contained write refuses to replace an existing path")
+            if not stat.S_ISREG(existing.st_mode):
+                raise SystemExit(f"contained write target is not a regular file: {relative_path}")
+            try:
+                fd = os.open(name, _file_write_flags(), dir_fd=dir_fd)
+            except OSError as exc:
+                raise SystemExit(f"contained overwrite open failed: {exc}") from exc
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                os.close(fd)
+                raise SystemExit(f"contained write target is not a regular file: {relative_path}")
+            os.ftruncate(fd, 0)
+        except OSError as exc:
+            if isinstance(exc, FileExistsError):
+                raise
+            raise SystemExit(f"contained write open failed: {exc}") from exc
+        try:
+            _write_all(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if dir_fd != root_fd:
+            os.close(dir_fd)
+        os.close(root_fd)
+    return Path(package_root).joinpath(*parts)
 
 
 def digest_dir(release_root: Path, digest: str, *, must_exist: bool = False) -> Path:
@@ -643,11 +757,23 @@ def source_package_leftovers(signing_pins: dict) -> list[dict]:
             "reason": (
                 "Stage 3 leftover: the self-attesting Mac producer is hard-disabled. "
                 "It must not hash a caller-supplied .app and emit a matching "
-                "receipt plus external provenance. Stage 3 later builds from the "
-                "exact authenticated source in an isolated Mac lane, or consumes "
-                "an independently authenticated builder attestation. Until then, "
-                "admission refuses live/ for self-attested or caller-supplied "
-                "provenance. Do not fake a signed .app."
+                "receipt plus external provenance. Stage 3 recreates the package "
+                "on the isolated Mac from the approved commit, then builds from "
+                "that recreated source or consumes a builder attestation that "
+                "Stage 3 authenticates itself. JSON attestation_class strings "
+                "are not builder authority. Until then, admission refuses live/ "
+                "for self-attested or caller-supplied provenance. Do not fake a signed .app."
+            ),
+        }
+    )
+    leftovers.append(
+        {
+            "id": ROLLBACK_LEFTOVER_ID,
+            "status": "needed",
+            "reason": (
+                "local-dev-rollback is hard-disabled. It must not mutate current "
+                "on an unauthenticated historical package. Stage 3 recreates the "
+                "package on the isolated Mac from the approved commit."
             ),
         }
     )
@@ -658,10 +784,7 @@ def build_canonical_source_manifest() -> dict:
     """Reconstruct the complete authority-bearing source package from live source."""
     profile = load_local_dev_profile()
     frontend_proof = prove_frontend_dist(load_json(TAURI_CONF))
-    state_root, log_root = default_runtime_roots(profile)
-    for label, path in ("state_root", state_root), ("log_root", log_root):
-        if forbidden_runtime_root(ROOT, Path(path)):
-            raise SystemExit(f"{label} {path} is forbidden")
+    state_root, log_root = platform_neutral_runtime_roots(profile)
     head = require_clean_head()
     rows = source_tree_rows()
     digest = content_digest(rows)
@@ -821,6 +944,11 @@ def validate_local_dev_manifest(
     )
     if producer_leftover is None or producer_leftover.get("status") != "needed":
         raise SystemExit("source package must leave mac-controlled-candidate-producer needed")
+    rollback_leftover = next(
+        (item for item in leftovers if item.get("id") == ROLLBACK_LEFTOVER_ID), None
+    )
+    if rollback_leftover is None or rollback_leftover.get("status") != "needed":
+        raise SystemExit("source package must leave historical-package-rollback needed")
     if macos_app is not None:
         raise SystemExit("source-only package must not claim a macOS .app artifact")
     if not signing_pins["filled"] and (
@@ -866,7 +994,14 @@ def package_local_dev(args: argparse.Namespace) -> None:
     write_package_file(
         dest,
         "proofs/source-tree.json",
-        json.dumps([{"path": rel, "digest": d} for rel, d in rows], indent=2) + "\n",
+        json.dumps(
+            [
+                {"path": path, "type": typ, "mode": mode, "object": obj}
+                for path, typ, mode, obj in rows
+            ],
+            indent=2,
+        )
+        + "\n",
     )
     write_package_file(
         dest,
@@ -885,7 +1020,21 @@ def package_local_dev(args: argparse.Namespace) -> None:
 
 def recompute_stored_digest(dest: Path) -> str:
     proof = load_json(dest / "proofs" / "source-tree.json")
-    rows = [(item["path"], item["digest"]) for item in proof]
+    if not isinstance(proof, list) or not proof:
+        raise SystemExit("stored source-tree proof is missing or empty")
+    rows: list[tuple[str, str, str, str]] = []
+    for item in proof:
+        if not isinstance(item, dict):
+            raise SystemExit("stored source-tree proof entry must be an object")
+        try:
+            row = (item["path"], item["type"], item["mode"], item["object"])
+        except KeyError as exc:
+            raise SystemExit(f"stored source-tree proof missing {exc}") from exc
+        if any(not isinstance(part, str) or not part for part in row):
+            raise SystemExit("stored source-tree proof fields must be non-empty strings")
+        if (row[1], row[2]) not in GIT_TREE_MODES or not GIT_OBJECT_RE.fullmatch(row[3]):
+            raise SystemExit("stored source-tree proof has an unsupported git identity")
+        rows.append(row)
     return content_digest(rows)
 
 
@@ -913,26 +1062,12 @@ def verify_local_dev(args: argparse.Namespace) -> None:
 
 
 def rollback_local_dev(args: argparse.Namespace) -> None:
-    release_root = args.release_root.expanduser().resolve()
-    current = read_pointer(release_root, "current")
-    if current is None:
-        raise SystemExit("no current release to roll back from")
-    target = normalize_digest(args.target_digest)
-    dest = digest_dir(release_root, target)
-    if not (dest / "manifest.json").is_file():
-        raise SystemExit(f"rollback target {target} is not a published digest")
-    manifest = load_json(dest / "manifest.json")
-    recomputed = recompute_stored_digest(dest)
-    if recomputed != target or recomputed != manifest["content_digest"]:
-        raise SystemExit(
-            "rollback target tree digest did not recompute; "
-            "mutable pointer files are not authority"
-        )
-    if target == current:
-        raise SystemExit("rollback target must not equal current")
-    write_pointer(release_root, "previous", current)
-    write_pointer(release_root, "current", target)
-    print(target)
+    """Hard-disabled. Must not mutate current on an unauthenticated historical package."""
+    raise SystemExit(
+        "local-dev-rollback leftover: historical-package-rollback is needed. "
+        "It must not mutate current on an unauthenticated historical package. "
+        "Stage 3 recreates the package on the isolated Mac from the approved commit."
+    )
 
 
 def _entry_mode(path: Path) -> str:
@@ -1172,6 +1307,8 @@ def macos_signing_evidence(
     if attestation_class != INDEPENDENT_ATTESTATION_CLASS:
         evidence["reason"] = "unsupported provenance attestation class; fail closed"
         return evidence
+    # JSON attestation_class is not builder authority. Stage 3 must
+    # authenticate the builder attestation itself. This hold keeps live/ closed.
     if provenance.get("builder") != "isolated-mac-lane":
         evidence["reason"] = (
             "independent builder attestation must name isolated-mac-lane; "
@@ -1285,7 +1422,10 @@ def proven_macos_artifact(artifact: dict | None) -> bool:
 
 def write_candidate_evidence(dest: Path, evidence: dict) -> Path:
     return write_package_file(
-        dest, "candidate/evidence/macos-app.json", json.dumps(evidence, indent=2) + "\n"
+        dest,
+        "candidate/evidence/macos-app.json",
+        json.dumps(evidence, indent=2) + "\n",
+        overwrite_regular=True,
     )
 
 
@@ -1355,10 +1495,10 @@ def produce_macos_candidate(args: argparse.Namespace) -> None:
         "reason": (
             "Stage 3 leftover: controlled Mac candidate producer is hard-disabled. "
             "It must not hash a caller-supplied .app and emit matching receipt plus "
-            "external provenance. Stage 3 later builds from the exact authenticated "
-            "source in an isolated Mac lane, or consumes an independently "
-            "authenticated builder attestation. Until then, admission refuses live/ "
-            "for self-attested or caller-supplied provenance. Do not fake a signed .app."
+            "external provenance. Stage 3 recreates the package on the isolated Mac "
+            "from the approved commit. JSON attestation_class strings are not "
+            "builder authority. Until then, admission refuses live/ for "
+            "self-attested or caller-supplied provenance. Do not fake a signed .app."
         ),
         "content_digest": current,
         "platform": sys.platform,
@@ -1367,6 +1507,7 @@ def produce_macos_candidate(args: argparse.Namespace) -> None:
         dest,
         "candidate/unsigned/producer-leftover.json",
         json.dumps(leftover, indent=2) + "\n",
+        overwrite_regular=True,
     )
     print(path)
     if args.unsigned_app is not None:
@@ -1433,7 +1574,10 @@ def main() -> None:
     pkg.add_argument("--source-commit", default=None)
     ver = sub.add_parser("local-dev-verify", help="recompute the complete source-tree digest")
     ver.add_argument("--release-root", required=True, type=Path)
-    rb = sub.add_parser("local-dev-rollback", help="activate an authenticated target tree digest")
+    rb = sub.add_parser(
+        "local-dev-rollback",
+        help="leftover: must not mutate current on an unauthenticated historical package",
+    )
     rb.add_argument("--release-root", required=True, type=Path)
     rb.add_argument("--target-digest", required=True)
     admit = sub.add_parser(
