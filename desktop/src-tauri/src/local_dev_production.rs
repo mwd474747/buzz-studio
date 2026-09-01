@@ -10,6 +10,12 @@
 //! display only. The verified 64-hex owner public key or its digest must be
 //! compiled into that JSON; env vars are not a Finder-launched pin. Empty
 //! production pins fail closed.
+//!
+//! Packager-only admission helpers (macos leftover, rollback, runtime paths,
+//! transport observation) are compiled for the contract tests. They are not
+//! dead product surface.
+
+#![cfg_attr(not(test), allow(dead_code))]
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};

@@ -63,6 +63,16 @@ pub(crate) struct ResolvedIdentity {
     pub(crate) storage: IdentityStorage,
 }
 
+impl std::fmt::Debug for ResolvedIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedIdentity")
+            .field("pubkey", &self.keys.public_key().to_hex())
+            .field("recovery", &self.recovery)
+            .field("storage", &self.storage)
+            .finish()
+    }
+}
+
 /// Atomically write the key to disk. Uses `atomic-write-file` which:
 /// 1. Writes to a temp file in the same directory
 /// 2. Calls fsync on the file

@@ -9,7 +9,10 @@ fn local_dev_production_refuses_first_launch_generate() {
     let legacy_path = dir.path().join("identity.key");
     let store = FakeIdentityStore::reachable_but_empty();
     let err = with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-        resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap_err()
+        match resolve_identity_with_store(&store, &legacy_path, dir.path()) {
+            Ok(_) => panic!("expected first-launch generate to fail closed"),
+            Err(err) => err,
+        }
     });
     assert!(
         err.contains("refuses first-launch generate"),
@@ -28,7 +31,10 @@ fn local_dev_production_recovers_exact_owner_and_refuses_wrong_identity() {
     let legacy_path = dir.path().join("identity.key");
     let store = FakeIdentityStore::present_with(&nsec);
     let err = with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-        resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap_err()
+        match resolve_identity_with_store(&store, &legacy_path, dir.path()) {
+            Ok(_) => panic!("expected wrong identity to fail closed"),
+            Err(err) => err,
+        }
     });
     assert!(
         err.contains("does not exactly match")
@@ -46,7 +52,10 @@ fn local_dev_production_locked_keychain_fails_closed() {
     write_migration_marker(&migration_marker_path(dir.path())).unwrap();
     let store = FakeIdentityStore::unreachable();
     let err = with_test_profile(fixture_profile(Some(fixture_owner_hex()), None), || {
-        resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap_err()
+        match resolve_identity_with_store(&store, &legacy_path, dir.path()) {
+            Ok(_) => panic!("expected locked keychain to fail closed"),
+            Err(err) => err,
+        }
     });
     assert!(
         err.contains("locked or unreachable"),
