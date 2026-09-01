@@ -25,3 +25,6 @@ strings are not builder authority. Linux packages are not transferred as
 the Mac production package. Until then, admission refuses `live/` for
 self-attested or caller-supplied provenance. The producer hold stays so
 that weakness cannot become live today.
+
+Residual: `local-dev-produce-app` does not repeat the forbidden-release-root
+check. See `.release/LEFTOVER-release-root-writer-containment.md`.

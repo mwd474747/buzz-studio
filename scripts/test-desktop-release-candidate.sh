@@ -579,34 +579,108 @@ except SystemExit as exc:
     if "traversal" not in str(exc) and "relative" not in str(exc):
         raise
 
-# Concurrent parent swap must not escape the package
+# (a) Swap intermediate releases/ after package creation. Held root fd must
+# not follow the swapped component; outside must stay untouched.
+swap_root = pathlib.Path(tempfile.mkdtemp())
+swap_out = pathlib.Path(tempfile.mkdtemp())
+digest_name = "sha256-" + ("ab" * 32)
+with mod.held_release_root(swap_root) as held:
+    held.mkdir_rel(f"releases/{digest_name}", exclusive_leaf=True)
+    held.write_rel(f"releases/{digest_name}/created.txt", "inside\n")
+    releases = swap_root / "releases"
+    orig_releases = swap_root / "releases.orig"
+    releases.rename(orig_releases)
+    releases.symlink_to(swap_out)
+    try:
+        held.write_rel(f"releases/{digest_name}/after-swap.txt", "pwned\n")
+        raise SystemExit("write after releases/ symlink swap was accepted")
+    except SystemExit as exc:
+        text = str(exc).lower()
+        if "symlink" not in text and "directory descriptor" not in text:
+            raise SystemExit(f"releases/ swap failed for the wrong reason: {exc}") from exc
+assert not list(swap_out.rglob("*")), "releases/ swap redirected a write outside the release root"
+assert (orig_releases / digest_name / "created.txt").read_text() == "inside\n"
+assert not (orig_releases / digest_name / "after-swap.txt").exists()
+
+# (b) Hard-linked mutable leaves must not truncate an external victim inode.
+link_root = pathlib.Path(tempfile.mkdtemp())
+victim_dir = pathlib.Path(tempfile.mkdtemp())
+old_current = "sha256:" + ("11" * 32) + "\n"
+new_current = "sha256:" + ("22" * 32) + "\n"
+old_previous = "sha256:" + ("33" * 32) + "\n"
+new_previous = "sha256:" + ("44" * 32) + "\n"
+old_evidence = '{"stage":"old"}\n'
+new_evidence = '{"stage":"new"}\n'
+old_producer = '{"producer":"old"}\n'
+new_producer = '{"producer":"new"}\n'
+with mod.held_release_root(link_root) as held:
+    held.write_rel("current", old_current)
+    held.write_rel("previous", old_previous)
+    held.write_rel("evidence.json", old_evidence)
+    held.write_rel("producer.json", old_producer)
+victims = {}
+for name, old in (
+    ("current", old_current),
+    ("previous", old_previous),
+    ("evidence.json", old_evidence),
+    ("producer.json", old_producer),
+):
+    victim = victim_dir / name
+    os.link(link_root / name, victim)
+    victims[name] = (victim, old)
+with mod.held_release_root(link_root) as held:
+    held.write_rel("current", new_current, replace=True)
+    held.write_rel("previous", new_previous, replace=True)
+    held.write_rel("evidence.json", new_evidence, replace=True)
+    held.write_rel("producer.json", new_producer, replace=True)
+assert (link_root / "current").read_text() == new_current
+assert (link_root / "previous").read_text() == new_previous
+assert (link_root / "evidence.json").read_text() == new_evidence
+assert (link_root / "producer.json").read_text() == new_producer
+for name, (victim, old) in victims.items():
+    assert victim.read_text() == old, f"hard-linked {name} truncated external victim"
+
+# (c) Simultaneous pointer writers plus a reader: only complete old-or-new.
 import threading
 race_root = pathlib.Path(tempfile.mkdtemp())
-race_out = pathlib.Path(tempfile.mkdtemp())
-stop = threading.Event()
+old_ptr = "sha256:" + ("aa" * 32) + "\n"
+new_ptr_a = "sha256:" + ("bb" * 32) + "\n"
+new_ptr_b = "sha256:" + ("cc" * 32) + "\n"
+allowed = {old_ptr, new_ptr_a, new_ptr_b}
+with mod.held_release_root(race_root) as held:
+    held.write_rel("current", old_ptr)
+observed = []
+partial = []
 
-def attacker():
-    target = race_root / "a"
-    while not stop.is_set():
+def pointer_reader():
+    for _ in range(400):
         try:
-            if target.is_symlink():
-                target.unlink()
-            elif target.exists():
-                shutil.rmtree(target, ignore_errors=True)
-            target.symlink_to(race_out)
+            data = (race_root / "current").read_text()
         except OSError:
-            pass
+            continue
+        observed.append(data)
+        if data not in allowed:
+            partial.append(data)
 
-thread = threading.Thread(target=attacker, daemon=True)
-thread.start()
-for i in range(40):
-    try:
-        mod.write_package_file(race_root, f"a/b/race-{i}.txt", f"{i}\n")
-    except SystemExit:
-        pass
-stop.set()
-thread.join(timeout=2)
-assert not list(race_out.rglob("*")), "descriptor write escaped through a raced symlink parent"
+def pointer_writer(payload):
+    with mod.held_release_root(race_root) as held:
+        for _ in range(80):
+            held.write_rel("current", payload, replace=True)
+
+reader = threading.Thread(target=pointer_reader)
+writer_a = threading.Thread(target=pointer_writer, args=(new_ptr_a,))
+writer_b = threading.Thread(target=pointer_writer, args=(new_ptr_b,))
+reader.start()
+writer_a.start()
+writer_b.start()
+reader.join()
+writer_a.join()
+writer_b.join()
+assert not partial, f"reader observed empty or mixed pointer contents: {partial[:5]!r}"
+assert observed, "pointer reader observed no contents"
+final = (race_root / "current").read_text()
+assert final in {new_ptr_a, new_ptr_b}, f"final pointer was not a complete new value: {final!r}"
+assert set(observed) <= allowed
 
 # Missing / wrong embedded resources
 app = pathlib.Path(tempfile.mkdtemp()) / "Buzz.app"
@@ -752,13 +826,15 @@ live_evidence = {
     "receipt": {"test_only": True},
     "reason": "synthetic leftover: injected all-success evidence",
 }
-try:
-    mod.write_live_if_proven(dest, manifest, live_evidence)
-    raise SystemExit("synthetic all-success evidence wrote live/")
-except SystemExit as exc:
-    text = str(exc)
-    if "live/" not in text and "self-attested" not in text and "caller-supplied" not in text and "leftover" not in text:
-        raise
+dest_rel = mod.package_relpath(current)
+with mod.held_release_root(root) as held:
+    try:
+        mod.write_live_if_proven(held, dest, dest_rel, manifest, live_evidence)
+        raise SystemExit("synthetic all-success evidence wrote live/")
+    except SystemExit as exc:
+        text = str(exc)
+        if "live/" not in text and "self-attested" not in text and "caller-supplied" not in text and "leftover" not in text:
+            raise
 assert not (dest / "live").exists(), "synthetic leftover must not write live/"
 PY
   # Real leftover producer-to-admission path (unsigned). Does not claim live/ is proven.

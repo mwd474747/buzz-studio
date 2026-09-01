@@ -121,8 +121,13 @@ digests include symlinks and file modes. The self-attesting Mac producer is
 hard-disabled (Stage 3 leftover `mac-controlled-candidate-producer`): it
 must not manufacture provenance from caller-supplied `.app` bytes.
 `live/` is refused for self-attested or caller-supplied provenance.
-Incomplete observations go under `candidate/evidence/` through a no-symlink
-contained write helper. The owner pin comes only from the compiled profile;
+Incomplete observations go under `candidate/evidence/` through one held
+release-root directory descriptor for the whole operation: exclusive temp,
+fsync, descriptor-relative rename or no-replace publish. Writers never
+reopen a descendant package pathname and never truncate an existing
+authority inode. Residual writer debt is leftover
+`release-root-writer-containment` and must not open `live/` while
+signing/producer holds remain. The owner pin comes only from the compiled profile;
 CLI cannot override it. See `.release/LEFTOVER-mac-packaged-app-build.md` and
 `.release/LEFTOVER-mac-controlled-candidate-producer.md`. Do not install
 or start Buzz.app from this flow. This leftover does not claim a signed Mac

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import plistlib
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -551,7 +553,18 @@ def read_pointer(release_root: Path, name: str) -> str | None:
 
 
 def write_pointer(release_root: Path, name: str, digest: str) -> None:
-    write_package_file(release_root, name, digest + "\n", overwrite_regular=True)
+    with held_release_root(release_root) as root:
+        root.write_rel(name, digest + "\n", replace=True)
+
+
+def package_dir_name(digest: str) -> str:
+    if not DIGEST_RE.fullmatch(digest):
+        raise SystemExit("current must be exactly sha256:<64 hex>")
+    return digest.replace(":", "-")
+
+
+def package_relpath(digest: str) -> str:
+    return f"releases/{package_dir_name(digest)}"
 
 
 def _relative_write_parts(relative_path: str) -> tuple[str, ...]:
@@ -576,12 +589,6 @@ def _file_excl_flags() -> int:
     return os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
 
 
-def _file_write_flags() -> int:
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise SystemExit("descriptor-anchored writes require O_NOFOLLOW")
-    return os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW
-
-
 def _open_dirfd(path: str | None = None, *, dir_fd: int | None = None, name: str | None = None) -> int:
     flags = _dir_open_flags()
     try:
@@ -596,42 +603,27 @@ def _open_dirfd(path: str | None = None, *, dir_fd: int | None = None, name: str
         raise SystemExit(f"directory descriptor open failed: {exc}") from exc
 
 
-def _mkdirat_open(dir_fd: int, name: str) -> int:
+def _lstat_child(dir_fd: int, name: str) -> os.stat_result:
+    try:
+        return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise SystemExit(f"contained lstat failed: {exc}") from exc
+
+
+def _mkdirat_open(dir_fd: int, name: str, *, exclusive: bool = False) -> int:
     try:
         os.mkdir(name, 0o755, dir_fd=dir_fd)
     except FileExistsError:
-        pass
+        if exclusive:
+            raise SystemExit(f"digest directory {name} already exists; publication is write-once")
     except OSError as exc:
         raise SystemExit(f"contained mkdir failed: {exc}") from exc
-    try:
-        existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-    except OSError as exc:
-        raise SystemExit(f"contained mkdir stat failed: {exc}") from exc
+    existing = _lstat_child(dir_fd, name)
     if stat.S_ISLNK(existing.st_mode):
         raise SystemExit(f"symlink destination denied: {name}")
     if not stat.S_ISDIR(existing.st_mode):
         raise SystemExit(f"contained path is not a directory: {name}")
     return _open_dirfd(name=name, dir_fd=dir_fd)
-
-
-def mkdir_contained(root: Path, relative_path: str = ".") -> Path:
-    """Create directories under root via no-follow directory descriptors."""
-    root = Path(root)
-    root_fd = _open_dirfd(str(root))
-    try:
-        if relative_path in {".", ""}:
-            return root
-        current_fd = root_fd
-        for part in _relative_write_parts(relative_path):
-            child_fd = _mkdirat_open(current_fd, part)
-            if current_fd != root_fd:
-                os.close(current_fd)
-            current_fd = child_fd
-        if current_fd != root_fd:
-            os.close(current_fd)
-    finally:
-        os.close(root_fd)
-    return root.joinpath(*_relative_write_parts(relative_path))
 
 
 def _write_all(fd: int, payload: bytes) -> None:
@@ -643,61 +635,178 @@ def _write_all(fd: int, payload: bytes) -> None:
         view = view[written:]
 
 
-def write_package_file(
-    package_root: Path,
-    relative_path: str,
-    data: str | bytes,
-    *,
-    overwrite_regular: bool = False,
-) -> Path:
-    """Directory-descriptor-anchored write. No path follow, no os.replace."""
+def _unlink_under(dir_fd: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise SystemExit(f"contained temp unlink failed: {exc}") from exc
+
+
+def _publish_temp(dir_fd: int, tmp_name: str, dest_name: str, *, replace: bool) -> None:
+    """Publish a fsynced exclusive temp inode via descriptor-relative rename or link."""
+    if replace:
+        try:
+            os.rename(tmp_name, dest_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except OSError as exc:
+            _unlink_under(dir_fd, tmp_name)
+            raise SystemExit(f"descriptor-relative rename failed: {exc}") from exc
+        return
+    try:
+        os.link(
+            tmp_name,
+            dest_name,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError:
+        _unlink_under(dir_fd, tmp_name)
+        raise SystemExit(f"immutable publish refused existing path: {dest_name}")
+    except OSError as exc:
+        _unlink_under(dir_fd, tmp_name)
+        raise SystemExit(f"immutable no-replace publish failed: {exc}") from exc
+    _unlink_under(dir_fd, tmp_name)
+
+
+def _write_under_fd(root_fd: int, relative_path: str, data: str | bytes, *, replace: bool) -> None:
+    """Write a fresh exclusive temp inode, fsync it, then publish from root_fd.
+
+    Never reopens a descendant pathname and never truncates an existing inode.
+    Intermediate components are opened only with openat(..., O_NOFOLLOW).
+    """
     parts = _relative_write_parts(relative_path)
     payload = data.encode() if isinstance(data, str) else data
-    root_fd = _open_dirfd(str(package_root))
     dir_fd = root_fd
+    opened: list[int] = []
     try:
         for part in parts[:-1]:
             child_fd = _mkdirat_open(dir_fd, part)
-            if dir_fd != root_fd:
-                os.close(dir_fd)
+            opened.append(child_fd)
             dir_fd = child_fd
-        name = parts[-1]
+        dest_name = parts[-1]
+        tmp_name = f".{dest_name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
         try:
-            fd = os.open(name, _file_excl_flags(), 0o644, dir_fd=dir_fd)
-        except FileExistsError:
-            try:
-                existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-            except OSError as exc:
-                raise SystemExit(f"contained write stat failed: {exc}") from exc
-            if stat.S_ISLNK(existing.st_mode):
-                raise SystemExit(f"symlink destination denied: {relative_path}")
-            if not overwrite_regular:
-                raise SystemExit("contained write refuses to replace an existing path")
-            if not stat.S_ISREG(existing.st_mode):
-                raise SystemExit(f"contained write target is not a regular file: {relative_path}")
-            try:
-                fd = os.open(name, _file_write_flags(), dir_fd=dir_fd)
-            except OSError as exc:
-                raise SystemExit(f"contained overwrite open failed: {exc}") from exc
-            opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode):
-                os.close(fd)
-                raise SystemExit(f"contained write target is not a regular file: {relative_path}")
-            os.ftruncate(fd, 0)
+            fd = os.open(tmp_name, _file_excl_flags(), 0o644, dir_fd=dir_fd)
         except OSError as exc:
-            if isinstance(exc, FileExistsError):
-                raise
-            raise SystemExit(f"contained write open failed: {exc}") from exc
+            raise SystemExit(f"exclusive temp open failed: {exc}") from exc
         try:
             _write_all(fd, payload)
             os.fsync(fd)
         finally:
             os.close(fd)
+        _publish_temp(dir_fd, tmp_name, dest_name, replace=replace)
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            raise SystemExit(f"containing directory fsync failed: {exc}") from exc
     finally:
-        if dir_fd != root_fd:
-            os.close(dir_fd)
-        os.close(root_fd)
-    return Path(package_root).joinpath(*parts)
+        for child_fd in reversed(opened):
+            os.close(child_fd)
+
+
+def _exists_under_fd(root_fd: int, relative_path: str) -> bool:
+    parts = _relative_write_parts(relative_path)
+    dir_fd = root_fd
+    opened: list[int] = []
+    try:
+        for part in parts[:-1]:
+            try:
+                existing = os.stat(part, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+            except OSError as exc:
+                raise SystemExit(f"contained lstat failed: {exc}") from exc
+            if stat.S_ISLNK(existing.st_mode):
+                raise SystemExit(f"symlink destination denied: {part}")
+            if not stat.S_ISDIR(existing.st_mode):
+                raise SystemExit(f"contained path is not a directory: {part}")
+            child_fd = _open_dirfd(name=part, dir_fd=dir_fd)
+            opened.append(child_fd)
+            dir_fd = child_fd
+        try:
+            os.stat(parts[-1], dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise SystemExit(f"contained lstat failed: {exc}") from exc
+        return True
+    finally:
+        for child_fd in reversed(opened):
+            os.close(child_fd)
+
+
+class HeldReleaseRoot:
+    """One trusted release-root directory descriptor for a whole write operation."""
+
+    def __init__(self, path: Path, fd: int) -> None:
+        self.path = path
+        self.fd = fd
+
+    def child_exists(self, relative_path: str) -> bool:
+        return _exists_under_fd(self.fd, relative_path)
+
+    def mkdir_rel(self, relative_path: str, *, exclusive_leaf: bool = False) -> Path:
+        parts = _relative_write_parts(relative_path)
+        dir_fd = self.fd
+        opened: list[int] = []
+        try:
+            for index, part in enumerate(parts):
+                child_fd = _mkdirat_open(
+                    dir_fd, part, exclusive=exclusive_leaf and index == len(parts) - 1
+                )
+                opened.append(child_fd)
+                dir_fd = child_fd
+        finally:
+            for child_fd in reversed(opened):
+                os.close(child_fd)
+        return self.path.joinpath(*parts)
+
+    def write_rel(self, relative_path: str, data: str | bytes, *, replace: bool = False) -> Path:
+        _write_under_fd(self.fd, relative_path, data, replace=replace)
+        return self.path.joinpath(*_relative_write_parts(relative_path))
+
+
+@contextlib.contextmanager
+def held_release_root(release_root: Path):
+    """Open the trusted release-root directory once; close it after the operation."""
+    path = Path(release_root).expanduser().resolve()
+    fd = _open_dirfd(str(path))
+    try:
+        yield HeldReleaseRoot(path, fd)
+    finally:
+        os.close(fd)
+
+
+def mkdir_contained(root: Path, relative_path: str = ".") -> Path:
+    """Create directories under a trusted root via no-follow directory descriptors."""
+    if relative_path in {".", ""}:
+        return Path(root)
+    with held_release_root(root) as held:
+        return held.mkdir_rel(relative_path)
+
+
+def write_package_file(
+    package_root: Path,
+    relative_path: str,
+    data: str | bytes,
+    *,
+    replace: bool = False,
+    overwrite_regular: bool | None = None,
+) -> Path:
+    """Single-root convenience write. Callers must pass the trusted root, not a descendant pathname.
+
+    Multi-file operations must use one held_release_root() for the whole operation.
+    Existing inodes are never truncated: publication is exclusive temp + fsync +
+    descriptor-relative rename (replace) or no-replace link (immutable).
+    `overwrite_regular` is accepted as an alias for replace-via-rename; it does not
+    open or truncate the destination inode.
+    """
+    if overwrite_regular is not None:
+        replace = overwrite_regular
+    with held_release_root(package_root) as root:
+        return root.write_rel(relative_path, data, replace=replace)
 
 
 def digest_dir(release_root: Path, digest: str, *, must_exist: bool = False) -> Path:
@@ -983,38 +1092,41 @@ def package_local_dev(args: argparse.Namespace) -> None:
     digest = manifest["content_digest"]
     validate_local_dev_manifest(manifest, live=False)
 
-    dest_name = digest.replace(":", "-")
-    dest = digest_dir(release_root, digest)
-    if dest.exists() or dest.is_symlink():
-        raise SystemExit(f"digest directory {dest} already exists; publication is write-once")
-    dest = mkdir_contained(release_root, f"releases/{dest_name}")
-    write_package_file(dest, "manifest.json", json.dumps(manifest, indent=2) + "\n")
-    write_package_file(dest, "profile.json", compiled_profile_raw())
-    write_package_file(dest, "proofs/frontend-dist.json", json.dumps(manifest["frontend"], indent=2) + "\n")
-    write_package_file(
-        dest,
-        "proofs/source-tree.json",
-        json.dumps(
-            [
-                {"path": path, "type": typ, "mode": mode, "object": obj}
-                for path, typ, mode, obj in rows
-            ],
-            indent=2,
+    dest_rel = package_relpath(digest)
+    with held_release_root(release_root) as root:
+        if root.child_exists(dest_rel):
+            raise SystemExit(
+                f"digest directory {release_root / dest_rel} already exists; publication is write-once"
+            )
+        dest = root.mkdir_rel(dest_rel, exclusive_leaf=True)
+        root.write_rel(f"{dest_rel}/manifest.json", json.dumps(manifest, indent=2) + "\n")
+        root.write_rel(f"{dest_rel}/profile.json", compiled_profile_raw())
+        root.write_rel(
+            f"{dest_rel}/proofs/frontend-dist.json",
+            json.dumps(manifest["frontend"], indent=2) + "\n",
         )
-        + "\n",
-    )
-    write_package_file(
-        dest,
-        "artifacts/README",
-        "No Buzz.app is produced here. Leftover: mac-packaged-app-build.\n"
-        "Do not treat any file in this directory as a macOS application.\n"
-        "A boolean admit_macos_app_artifact(true) is not proof of a signed app.\n"
-        "The self-attesting Mac producer is hard-disabled (Stage 3 leftover).\n",
-    )
-    previous = read_pointer(release_root, "current")
-    if previous and previous != digest:
-        write_pointer(release_root, "previous", previous)
-    write_pointer(release_root, "current", digest)
+        root.write_rel(
+            f"{dest_rel}/proofs/source-tree.json",
+            json.dumps(
+                [
+                    {"path": path, "type": typ, "mode": mode, "object": obj}
+                    for path, typ, mode, obj in rows
+                ],
+                indent=2,
+            )
+            + "\n",
+        )
+        root.write_rel(
+            f"{dest_rel}/artifacts/README",
+            "No Buzz.app is produced here. Leftover: mac-packaged-app-build.\n"
+            "Do not treat any file in this directory as a macOS application.\n"
+            "A boolean admit_macos_app_artifact(true) is not proof of a signed app.\n"
+            "The self-attesting Mac producer is hard-disabled (Stage 3 leftover).\n",
+        )
+        previous = read_pointer(release_root, "current")
+        if previous and previous != digest:
+            root.write_rel("previous", previous + "\n", replace=True)
+        root.write_rel("current", digest + "\n", replace=True)
     print(dest / "manifest.json")
 
 
@@ -1130,6 +1242,9 @@ def sha256_tree(path: Path) -> str:
     walk(path)
     if not rows:
         record(".", "dir", path, "")
+    # Leftover: a non-empty bundle omits the root-directory mode from the
+    # digest. Do not "fix" that here by opening live/ or weakening signing
+    # holds. See .release/LEFTOVER-release-root-writer-containment.md.
     return content_digest(rows)
 
 
@@ -1420,12 +1535,11 @@ def proven_macos_artifact(artifact: dict | None) -> bool:
     )
 
 
-def write_candidate_evidence(dest: Path, evidence: dict) -> Path:
-    return write_package_file(
-        dest,
-        "candidate/evidence/macos-app.json",
+def write_candidate_evidence(root: HeldReleaseRoot, dest_rel: str, evidence: dict) -> Path:
+    return root.write_rel(
+        f"{dest_rel}/candidate/evidence/macos-app.json",
         json.dumps(evidence, indent=2) + "\n",
-        overwrite_regular=True,
+        replace=True,
     )
 
 
@@ -1435,7 +1549,9 @@ def producer_leftover_needed(source_manifest: dict) -> bool:
     return producer is None or producer.get("status") != "satisfied"
 
 
-def write_live_if_proven(dest: Path, source_manifest: dict, evidence: dict) -> Path:
+def write_live_if_proven(
+    root: HeldReleaseRoot, dest: Path, dest_rel: str, source_manifest: dict, evidence: dict
+) -> Path:
     provenance = load_build_provenance(dest)
     attestation_class = None if provenance is None else provenance.get("attestation_class")
     leftover_needed = (
@@ -1456,6 +1572,10 @@ def write_live_if_proven(dest: Path, source_manifest: dict, evidence: dict) -> P
         )
     live = dict(source_manifest)
     live["artifacts"] = {"macos_app": evidence}
+    # Leftover: this future live-manifest construction still drops the
+    # needed historical-package-rollback leftover. Do not satisfy it here
+    # or open live/ while signing/producer holds remain.
+    # See .release/LEFTOVER-release-root-writer-containment.md.
     live["leftovers"] = [
         {
             "id": MAC_LEFTOVER_ID,
@@ -1470,10 +1590,12 @@ def write_live_if_proven(dest: Path, source_manifest: dict, evidence: dict) -> P
         },
     ]
     validate_local_dev_manifest(live, live=True, source=source_manifest)
-    live_dest = dest / "live"
-    if live_dest.exists() or live_dest.is_symlink():
-        raise SystemExit(f"{live_dest} already exists; live publication is write-once")
-    return write_package_file(dest, "live/manifest.json", json.dumps(live, indent=2) + "\n")
+    live_rel = f"{dest_rel}/live"
+    if root.child_exists(live_rel):
+        raise SystemExit(f"{root.path / live_rel} already exists; live publication is write-once")
+    return root.write_rel(
+        f"{live_rel}/manifest.json", json.dumps(live, indent=2) + "\n", replace=False
+    )
 
 
 def embed_profile_and_receipt(app: Path, manifest: dict) -> dict:
@@ -1486,6 +1608,8 @@ def embed_profile_and_receipt(app: Path, manifest: dict) -> dict:
 
 def produce_macos_candidate(args: argparse.Namespace) -> None:
     """Hard-disabled self-attesting producer. Stage 3 leftover on every host."""
+    # Leftover: this write command does not repeat forbidden_runtime_root.
+    # See .release/LEFTOVER-release-root-writer-containment.md.
     current, dest, _manifest = authenticate_source_package(args.release_root)
     leftover = {
         "id": PRODUCER_LEFTOVER_ID,
@@ -1503,12 +1627,13 @@ def produce_macos_candidate(args: argparse.Namespace) -> None:
         "content_digest": current,
         "platform": sys.platform,
     }
-    path = write_package_file(
-        dest,
-        "candidate/unsigned/producer-leftover.json",
-        json.dumps(leftover, indent=2) + "\n",
-        overwrite_regular=True,
-    )
+    dest_rel = package_relpath(current)
+    with held_release_root(args.release_root) as root:
+        path = root.write_rel(
+            f"{dest_rel}/candidate/unsigned/producer-leftover.json",
+            json.dumps(leftover, indent=2) + "\n",
+            replace=True,
+        )
     print(path)
     if args.unsigned_app is not None:
         raise SystemExit(
@@ -1522,6 +1647,8 @@ def produce_macos_candidate(args: argparse.Namespace) -> None:
 
 
 def admit_local_dev_app(args: argparse.Namespace) -> None:
+    # Leftover: this write command does not repeat forbidden_runtime_root.
+    # See .release/LEFTOVER-release-root-writer-containment.md.
     current, dest, manifest = authenticate_source_package(args.release_root)
     if args.boolean_true:
         raise SystemExit("admit_macos_app_artifact(true) is not proof of a signed app")
@@ -1547,14 +1674,16 @@ def admit_local_dev_app(args: argparse.Namespace) -> None:
         or producer_leftover_needed(manifest)
         or evidence.get("provenance_attestation_class") != INDEPENDENT_ATTESTATION_CLASS
     )
-    if leftover_needed:
-        evidence_path = write_candidate_evidence(dest, evidence)
-        print(evidence_path)
-        raise SystemExit(
-            "incomplete observation written under candidate/evidence; "
-            "live/ is write-once for a proven signed and notarized candidate only"
-        )
-    path = write_live_if_proven(dest, manifest, evidence)
+    dest_rel = package_relpath(current)
+    with held_release_root(args.release_root) as root:
+        if leftover_needed:
+            evidence_path = write_candidate_evidence(root, dest_rel, evidence)
+            print(evidence_path)
+            raise SystemExit(
+                "incomplete observation written under candidate/evidence; "
+                "live/ is write-once for a proven signed and notarized candidate only"
+            )
+        path = write_live_if_proven(root, dest, dest_rel, manifest, evidence)
     print(path)
 
 

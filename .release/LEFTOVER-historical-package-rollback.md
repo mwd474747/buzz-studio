@@ -12,3 +12,7 @@ governance-boundary failure.
 Stage 3 recreates the package on the isolated Mac from the approved commit.
 It does not transfer a Linux package as the Mac production package and
 does not treat JSON `attestation_class` strings as builder authority.
+
+Residual: future live-manifest construction still drops this needed leftover.
+Do not satisfy it or write `live/` while signing/producer holds remain.
+See `.release/LEFTOVER-release-root-writer-containment.md`.

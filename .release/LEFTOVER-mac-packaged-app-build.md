@@ -32,10 +32,13 @@ must independently recompute the tree digest (files, **symlinks**, and
   `stapler validate` on macOS
 
 An unrelated Apple-notarized app fails. On Linux this fails closed without
-faking macOS tools. Incomplete observations go under `candidate/evidence/` via the no-symlink
-contained write helper. `live/` is refused while leftover
+faking macOS tools. Incomplete observations go under `candidate/evidence/` through a held
+release-root directory descriptor (exclusive temp, fsync, descriptor-relative
+publish; never reopen a descendant package pathname; never truncate an
+existing inode). `live/` is refused while leftover
 `mac-controlled-candidate-producer` is needed. Self-attested or
-caller-supplied provenance cannot write `live/`.
+caller-supplied provenance cannot write `live/`. Residual writer debt:
+`.release/LEFTOVER-release-root-writer-containment.md`.
 
 ## Worker inputs
 
