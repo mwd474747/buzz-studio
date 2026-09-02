@@ -7,9 +7,7 @@
     }
   },
   "plugins": {
-    "deep-link": {
-      "desktop": []
-    }
+    "deep-link": null
   },
   "bundle": {
     "externalBin": [],

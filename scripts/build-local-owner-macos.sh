@@ -168,7 +168,7 @@ if ! /usr/bin/jq -e '
   and (.app.security.csp | contains("object-src '\''none'\''"))
   and (.app.security.csp | contains("frame-src '\''none'\''"))
   and (.app.security.csp | contains("https://") | not)
-  and .plugins["deep-link"].desktop == []
+  and .plugins["deep-link"] == null
   and .bundle.externalBin == []
   and .bundle.macOS.entitlements == "Entitlements.local-owner.plist"
   and .bundle.macOS.infoPlist == "Info.local-owner.plist"
@@ -253,6 +253,9 @@ if [[ ! -d $build_root || -L $build_root \
 fi
 /bin/chmod 0700 "$build_root"
 cleanup_failed_build() {
+  if [[ -n ${hermit_root:-} && -d $hermit_root ]]; then
+    /bin/chmod -R u+w "$hermit_root" 2>/dev/null || true
+  fi
   /bin/rm -rf -- "$build_root"
 }
 trap cleanup_failed_build EXIT
@@ -526,6 +529,7 @@ if [[ $(isolated_git -C "$build_repo_root" rev-parse HEAD) != "$source_commit" ]
   echo "source changed during the local-owner build; rejecting the app" >&2
   exit 1
 fi
+/bin/chmod -R u+w "$hermit_root" 2>/dev/null || true
 /bin/rm -rf -- "$build_repo_root" "$source_bundle" "$hermit_root" \
   "$build_root/cargo-home" "$build_root/pnpm-store" \
   "$build_root/git-home" "$build_root/git-config"
