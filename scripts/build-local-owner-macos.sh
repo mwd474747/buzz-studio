@@ -103,6 +103,11 @@ overlay_path="$repo_root/desktop/src-tauri/tauri.local-owner.conf.json"
 entitlements_path="$repo_root/desktop/src-tauri/Entitlements.local-owner.plist"
 info_plist_path="$repo_root/desktop/src-tauri/Info.local-owner.plist"
 capability_path="$repo_root/desktop/src-tauri/capabilities/local-owner.json"
+conventional_info_plist="$repo_root/desktop/src-tauri/Info.plist"
+if [[ -e "$conventional_info_plist" || -L "$conventional_info_plist" ]]; then
+  echo "local-owner builds reject Tauri's implicit Info.plist merge input" >&2
+  exit 1
+fi
 governed_sources=(
   "$profile_path"
   "$ratification_path"
@@ -345,6 +350,11 @@ overlay_path="$build_repo_root/desktop/src-tauri/tauri.local-owner.conf.json"
 entitlements_path="$build_repo_root/desktop/src-tauri/Entitlements.local-owner.plist"
 info_plist_path="$build_repo_root/desktop/src-tauri/Info.local-owner.plist"
 capability_path="$build_repo_root/desktop/src-tauri/capabilities/local-owner.json"
+conventional_info_plist="$build_repo_root/desktop/src-tauri/Info.plist"
+if [[ -e "$conventional_info_plist" || -L "$conventional_info_plist" ]]; then
+  echo "isolated local-owner source contains Tauri's implicit Info.plist merge input" >&2
+  exit 1
+fi
 vite_environment_files=(
   "$build_repo_root/desktop/.env"
   "$build_repo_root/desktop/.env.local"
