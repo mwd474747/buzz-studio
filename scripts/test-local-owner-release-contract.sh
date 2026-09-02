@@ -90,6 +90,15 @@ done
   desktop/src-tauri/src/lib.rs
 /usr/bin/grep -Fq 'export BUZZ_DESKTOP_SOURCE_COMMIT="$source_commit"' scripts/build-local-owner-macos.sh
 /usr/bin/grep -Fq 'export BUZZ_DESKTOP_SOURCE_TREE="$source_tree"' scripts/build-local-owner-macos.sh
+/usr/bin/grep -Fq \
+  '"$verified_hermit" --level=fatal exec "$build_repo_root/bin/$tool" -- "$@"' \
+  scripts/build-local-owner-macos.sh
+if /usr/bin/grep -Fq \
+  '"$verified_hermit" --level=fatal exec "$build_repo_root" -- "$@"' \
+  scripts/build-local-owner-macos.sh; then
+  echo "local-owner wrapper passes a directory where Hermit requires a tool shim" >&2
+  exit 1
+fi
 /usr/bin/grep -Fq 'hermit_exec pnpm install --frozen-lockfile' scripts/build-local-owner-macos.sh
 /usr/bin/grep -Fq 'dependency installation changed the local-owner source; refusing provenance' \
   scripts/build-local-owner-macos.sh
