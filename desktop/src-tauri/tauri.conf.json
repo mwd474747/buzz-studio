@@ -67,7 +67,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": "Info.plist",
+      "infoPlist": "Info.standard.plist",
       "entitlements": "Entitlements.plist",
       "dmg": {
         "background": "icons/dmg-background.png",
