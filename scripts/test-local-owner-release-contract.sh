@@ -155,7 +155,7 @@ fi
   .bundle.macOS.entitlements == "Entitlements.local-owner.plist"
   and .bundle.macOS.infoPlist == "Info.local-owner.plist"
   and .app.security.capabilities == ["local-owner"]
-  and .plugins["deep-link"].desktop == []
+  and .plugins["deep-link"] == null
   and (.app.security.csp | contains("ws://localhost:3300"))
   and (.app.security.csp | contains("buzz-media:"))
   and (.app.security.csp | contains("http://127.0.0.1:") | not)
@@ -163,7 +163,7 @@ fi
 ' desktop/src-tauri/tauri.local-owner.conf.json >/dev/null
 /usr/bin/jq -s -e '
   .[0] * .[1]
-  | .plugins["deep-link"].desktop == []
+  | .plugins["deep-link"] == null
   and .bundle.macOS.infoPlist == "Info.local-owner.plist"
 ' desktop/src-tauri/tauri.conf.json \
   desktop/src-tauri/tauri.local-owner.conf.json >/dev/null
