@@ -39,6 +39,7 @@ import {
 } from "@/features/messages/hooks";
 import { buildWaveMessageContent } from "@/features/messages/lib/waveMessage";
 import { useOpenAgentActivity } from "@/features/agents/useOpenAgentActivity";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { useProfilePanel } from "@/shared/context/ProfilePanelContext";
 import { sendChannelMessage } from "@/shared/api/tauri";
 import type { Channel, RelayEvent } from "@/shared/api/types";
@@ -181,6 +182,7 @@ export function UserProfilePopover({
   const [pendingAction, setPendingAction] = React.useState<
     "message" | "huddle" | "wave" | null
   >(null);
+  const legacyAgentSurfacesEnabled = useLocalOwnerPolicy() === "inactive";
   const isMountedRef = React.useRef(false);
   const hoverTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -188,23 +190,29 @@ export function UserProfilePopover({
   const queryClient = useQueryClient();
   const { goChannel } = useAppNavigation();
   const openDmMutation = useOpenDmMutation();
-  const { isStarting: isStartingHuddle, startHuddle } = useHuddle();
+  const {
+    available: huddlesAvailable,
+    isStarting: isStartingHuddle,
+    startHuddle,
+  } = useHuddle();
   const profileQuery = useUserProfileQuery(open ? pubkey : undefined);
   const usersBatchQuery = useUsersBatchQuery(open ? [pubkey] : [], {
     enabled: open,
   });
   const relayAgentsQuery = useRelayAgentsQuery({
-    enabled: open,
+    enabled: open && legacyAgentSurfacesEnabled,
   });
   const managedAgentsQuery = useManagedAgentsQuery({
-    enabled: open,
+    enabled: open && legacyAgentSurfacesEnabled,
   });
   const presenceQuery = usePresenceQuery(open ? [pubkey] : [], {
     enabled: open,
   });
   const userStatusQuery = useUserStatusQuery(open ? [pubkey] : []);
 
-  const { canOpenAgentActivity, openAgentActivity } = useOpenAgentActivity();
+  const { canOpenAgentActivity, openAgentActivity } = useOpenAgentActivity({
+    enabled: legacyAgentSurfacesEnabled,
+  });
   const { openProfilePanel } = useProfilePanel();
   const canOpenProfilePanel = enableProfilePanel && Boolean(openProfilePanel);
   const relayAgent = relayAgentsQuery.data?.find((a) => a.pubkey === pubkey);
@@ -231,8 +239,8 @@ export function UserProfilePopover({
     open &&
     role !== "bot" &&
     (profileQuery.isPending ||
-      relayAgentsQuery.isPending ||
-      managedAgentsQuery.isPending ||
+      (legacyAgentSurfacesEnabled && relayAgentsQuery.isPending) ||
+      (legacyAgentSurfacesEnabled && managedAgentsQuery.isPending) ||
       usersBatchQuery.isPending);
   const displayName = profile?.displayName ?? truncatePubkey(pubkey);
   // Owner signal mirrors UserProfilePanel: a declared NIP-OA owner whose agent
@@ -241,7 +249,9 @@ export function UserProfilePopover({
   // it to every viewer. Combine declared ownership with local management, same
   // shape as the pane/sidebar/memory fixes. Every real boundary is server-side;
   // this only decides whether to paint the "View activity log" button.
-  const isOwner = useIsManagedAgent(isBotProfile ? pubkey : null);
+  const isOwner = useIsManagedAgent(
+    legacyAgentSurfacesEnabled && isBotProfile ? pubkey : null,
+  );
   const identityQuery = useIdentityQuery();
   const currentPubkey = identityQuery.data?.pubkey;
   const ownerLabel = isBotProfile
@@ -261,26 +271,33 @@ export function UserProfilePopover({
   const isCurrentUserOwner = ownsAuthorAgent(profile, currentPubkey);
   const viewerIsOwner = isCurrentUserOwner || isOwner === true;
   const showHuddleAction =
-    showHumanProfileActions ||
-    (showProfileActions &&
-      isBotProfile &&
-      viewerIsOwner &&
-      !isAgentClassificationPending);
+    legacyAgentSurfacesEnabled &&
+    huddlesAvailable &&
+    (showHumanProfileActions ||
+      (showProfileActions &&
+        isBotProfile &&
+        viewerIsOwner &&
+        !isAgentClassificationPending));
   const showMessageAction =
     showProfileActions &&
     !isAgentClassificationPending &&
-    (!isBotProfile || viewerIsOwner);
+    (!isBotProfile || (legacyAgentSurfacesEnabled && viewerIsOwner));
   const showAnyProfileActions =
     showHumanProfileActions || showMessageAction || showHuddleAction;
   const canViewActivity =
-    isBotProfile && viewerIsOwner && canOpenAgentActivity(pubkey);
+    legacyAgentSurfacesEnabled &&
+    isBotProfile &&
+    viewerIsOwner &&
+    canOpenAgentActivity(pubkey);
   const presenceStatus = presenceQuery.data?.[pubkey.toLowerCase()];
   const userStatus = userStatusQuery.data?.[pubkey.toLowerCase()];
   const userStatusText = userStatus?.text.trim() ?? "";
   const hasUserStatus = Boolean(userStatusText || userStatus?.emoji);
   const profileDescription = profile?.about?.trim() ?? "";
   const profileSubheader = profileDescription || profile?.nip05Handle?.trim();
-  const activeTurns = useAgentWorking(isBotProfile ? pubkey : null).channels;
+  const activeTurns = useAgentWorking(
+    legacyAgentSurfacesEnabled && isBotProfile ? pubkey : null,
+  ).channels;
   const channelsQuery = useChannelsQuery();
   const channelIdToName = React.useMemo(() => {
     const map: Record<string, string> = {};
@@ -611,7 +628,9 @@ export function UserProfilePopover({
             </div>
           )}
 
-          {isBotProfile && (managedAgent || relayAgent) ? (
+          {legacyAgentSurfacesEnabled &&
+          isBotProfile &&
+          (managedAgent || relayAgent) ? (
             <div className="flex flex-wrap gap-1.5">
               {managedAgent?.agentCommand ? (
                 <InfoBadge>{runtimeLabel(managedAgent.agentCommand)}</InfoBadge>

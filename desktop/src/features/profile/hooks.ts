@@ -31,7 +31,6 @@ import type {
 } from "@/shared/api/types";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { getAvatarSnapshotUrl } from "@/shared/lib/animatedAvatar";
-import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import {
   SELF_PROFILE_CACHE_EVENT,
   type SelfProfileCache,
@@ -63,7 +62,7 @@ async function persistSelfProfile(
   const avatarSnapshotUrl = getAvatarSnapshotUrl(profile.avatarUrl);
   const fetched =
     shouldFetchAvatar(profile.avatarUrl, existing) && avatarSnapshotUrl !== null
-      ? await fetchAvatarDataUrl(rewriteRelayUrl(avatarSnapshotUrl))
+      ? await fetchAvatarDataUrl(avatarSnapshotUrl)
       : null;
   const avatarDataUrl = resolveAvatarDataUrl(
     profile.avatarUrl,

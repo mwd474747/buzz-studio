@@ -1,5 +1,5 @@
 import * as React from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Navigate } from "@tanstack/react-router";
 
 import {
   parseProfilePanelTab,
@@ -9,6 +9,7 @@ import {
 } from "@/features/profile/ui/UserProfilePanelUtils";
 import { usePreviewFeatureWarning } from "@/shared/features";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 
 const PulseScreen = React.lazy(async () => {
   const module = await import("@/features/pulse/ui/PulseScreen");
@@ -40,7 +41,14 @@ export const Route = createFileRoute("/pulse")({
 });
 
 function PulseRouteComponent() {
+  const localOwnerPolicy = useLocalOwnerPolicy();
   usePreviewFeatureWarning("pulse");
+  if (localOwnerPolicy === "loading") {
+    return <ViewLoadingFallback includeHeader kind="pulse" />;
+  }
+  if (localOwnerPolicy !== "inactive") {
+    return <Navigate replace to="/" />;
+  }
   return (
     <React.Suspense
       fallback={<ViewLoadingFallback includeHeader kind="pulse" />}

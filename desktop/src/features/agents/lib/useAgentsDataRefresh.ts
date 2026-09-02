@@ -22,10 +22,11 @@ const COALESCE_MS = 200;
 // with empty deps — invalidation is global and has no reason to be
 // pubkey-scoped, so it must NOT live inside the pubkey-keyed `usePersonaSync`
 // (re-registering per identity switch would leak a listener each time).
-export function useAgentsDataRefresh(): void {
+export function useAgentsDataRefresh(enabled = true): void {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    if (!enabled) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const unlistenRuntime = listen("managed-agent-runtime-status", () => {
@@ -52,5 +53,5 @@ export function useAgentsDataRefresh(): void {
       void unlisten.then((fn) => fn());
       void unlistenRuntime.then((fn) => fn());
     };
-  }, [queryClient]);
+  }, [enabled, queryClient]);
 }

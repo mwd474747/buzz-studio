@@ -29,6 +29,7 @@ import {
 import { mergeChannelKnownAgentPubkeys } from "@/features/agents/knownAgentPubkeys";
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { pickWelcomeGuideAgent } from "@/features/onboarding/welcomeGuide";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { useWelcomeKickoffEntrance } from "@/features/onboarding/useWelcomeKickoffEntrance";
 import { useWelcomeKickoffStagePresence } from "@/features/onboarding/useWelcomeKickoffStagePresence";
 import { useWelcomeAgentCreate } from "@/features/channels/useWelcomeAgentCreate";
@@ -98,6 +99,8 @@ export function ChannelScreen({
 }: ChannelScreenProps) {
   const { goHome } = useAppNavigation();
   const { activeCommunity } = useCommunities();
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const legacySurfacesEnabled = localOwnerPolicy === "inactive";
   const {
     markChannelRead,
     markChannelUnread,
@@ -153,7 +156,6 @@ export function ChannelScreen({
     string | null
   >(null);
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
-  // URL-backed thread state catches up after navigation; this override keeps urgent open/close renders responsive.
   const [optimisticOpenThreadHeadId, setOptimisticOpenThreadHeadId] =
     React.useState<string | null | undefined>(undefined);
   const clearOptimisticThreadOverride = React.useCallback(() => {
@@ -261,17 +263,15 @@ export function ChannelScreen({
     activeChannel,
     resolvedMessages,
     threadReplyEvents,
+    localOwnerPolicy === "inactive",
   );
-
   const messageEventProfilePubkeys = useMessageEventProfilePubkeys(
     resolvedMessages,
     threadReplyEvents,
     relaySelfPubkey,
   );
-  const latestMessageEvent = React.useMemo(
-    () => resolvedMessages[resolvedMessages.length - 1] ?? null,
-    [resolvedMessages],
-  );
+  const latestMessageEvent =
+    resolvedMessages[resolvedMessages.length - 1] ?? null;
   const typingEntries = useChannelTyping(
     activeChannel,
     currentPubkey,
@@ -287,18 +287,19 @@ export function ChannelScreen({
   );
   const channelMembersQuery = useChannelMembersQuery(activeChannel?.id ?? null);
   const channelMembers = channelMembersQuery.data;
-  const managedAgentsQuery = useManagedAgentsQuery();
+  const managedAgentsQuery = useManagedAgentsQuery({
+    enabled: localOwnerPolicy === "inactive",
+  });
   const managedAgents = managedAgentsQuery.data ?? [];
-  const welcomeGuideAgent = React.useMemo(
-    () => pickWelcomeGuideAgent(managedAgents),
-    [managedAgents],
-  );
+  const welcomeGuideAgent = pickWelcomeGuideAgent(managedAgents);
   const welcomeAgentCreate = useWelcomeAgentCreate({
     activeChannel,
     currentIdentity,
     welcomeGuideAgent,
   });
-  const relayAgentsQuery = useRelayAgentsQuery();
+  const relayAgentsQuery = useRelayAgentsQuery({
+    enabled: localOwnerPolicy === "inactive",
+  });
   const relayAgents = relayAgentsQuery.data ?? [];
   const knownAgentPubkeys = React.useMemo(
     () =>
@@ -355,11 +356,6 @@ export function ChannelScreen({
     relayAgents,
   });
   const messageOwnerProfiles = useMessageOwnerProfiles(messageProfiles);
-  // Agent set for ChannelPane's own consumers (DM huddle member resolution,
-  // the agents list): the community-scoped baseline shared by every surface,
-  // widened with channel-member roles and this screen's profile lookup.
-  // Message rows no longer take this — MessageRow derives agent-ness itself
-  // from useKnownAgentPubkeys + per-pubkey profile checks.
   const communityAgentPubkeys = useKnownAgentPubkeys();
   const agentPubkeys = React.useMemo(() => {
     const pubkeys = new Set([...communityAgentPubkeys, ...knownAgentPubkeys]);
@@ -370,7 +366,9 @@ export function ChannelScreen({
     }
     return pubkeys;
   }, [knownAgentPubkeys, messageProfiles, communityAgentPubkeys]);
-  const personasQuery = usePersonasQuery();
+  const personasQuery = usePersonasQuery({
+    enabled: localOwnerPolicy === "inactive",
+  });
   const { personaLookup, respondToLookup } = React.useMemo(() => {
     const agents = managedAgentsQuery.data ?? [];
     const personaById = new Map(
@@ -479,14 +477,17 @@ export function ChannelScreen({
     isThreadMuted,
     readStateVersion,
   });
-  const editTargetMessage = React.useMemo(
-    () =>
-      timelineMessages.find((message) => message.id === editTargetId) ?? null,
-    [editTargetId, timelineMessages],
-  );
-  // Event id awaiting the empty-edit "Delete message?" confirmation (non-null
-  // while the dialog is open); see handleEditSave.
+  const editTargetMessage =
+    timelineMessages.find((message) => message.id === editTargetId) ?? null;
   const [emptyDeleteId, setEmptyDeleteId] = React.useState<string | null>(null);
+  const requestEmptyEditDelete = React.useCallback(
+    (eventId: string) => {
+      if (legacySurfacesEnabled) {
+        setEmptyDeleteId(eventId);
+      }
+    },
+    [legacySurfacesEnabled],
+  );
   const {
     handleCancelEdit,
     handleCancelThreadReply,
@@ -510,7 +511,7 @@ export function ChannelScreen({
     markRevealedRepliesRead,
     openThreadHeadId: effectiveOpenThreadHeadId,
     onOptimisticOpenThreadHeadIdChange: setOptimisticOpenThreadHeadId,
-    onRequestEmptyEditDelete: setEmptyDeleteId,
+    onRequestEmptyEditDelete: requestEmptyEditDelete,
     sendMessageMutation,
     setExpandedThreadReplyIds,
     setEditTargetId,
@@ -688,10 +689,9 @@ export function ChannelScreen({
     threadReplyTargetId,
     threadReplyTargetMessage,
   });
-
   const hasAuxiliaryPanel = Boolean(
     effectiveOpenThreadHeadId ||
-      openAgentSessionPubkey ||
+      (legacySurfacesEnabled && openAgentSessionPubkey) ||
       profilePanelPubkey ||
       channelManagementOpen,
   );
@@ -755,71 +755,97 @@ export function ChannelScreen({
     [],
   );
 
-  const channelHeader = React.useMemo(
-    () => (
-      <ChannelScreenHeader
-        activeChannel={activeChannel}
-        activeChannelEphemeralDisplay={activeChannelEphemeralDisplay}
-        activeChannelTitle={activeChannelTitle}
-        actionsVariant={shouldCompactHeaderActions ? "compact" : "inline"}
-        activeDmAvatarUrl={activeDmAvatarUrl}
-        activeDmHeaderParticipants={activeDmHeaderParticipants}
-        activeDmPresenceStatus={activeDmPresenceStatus}
-        chromeWrapperRef={channelHeaderChromeRef}
-        currentPubkey={currentPubkey}
-        isAddBotOpen={isAddBotOpen}
-        isJoining={joinChannelMutation.isPending}
-        onAddBotOpenChange={setIsAddBotOpen}
-        onJoinChannel={joinChannelMutation.mutateAsync}
-        onManageChannel={handleManageChannel}
-        onToggleMembers={handleToggleMembers}
-        showHeaderContent={!isSinglePanelView}
-        transparentChrome={activeChannel?.channelType !== "forum"}
-      />
-    ),
-    [
-      activeChannel,
-      activeChannelEphemeralDisplay,
-      activeChannelTitle,
-      shouldCompactHeaderActions,
-      activeDmAvatarUrl,
-      activeDmHeaderParticipants,
-      activeDmPresenceStatus,
-      channelHeaderChromeRef,
-      currentPubkey,
-      isAddBotOpen,
-      joinChannelMutation.isPending,
-      joinChannelMutation.mutateAsync,
-      handleManageChannel,
-      handleToggleMembers,
-      isSinglePanelView,
-    ],
+  const channelHeader = (
+    <ChannelScreenHeader
+      activeChannel={activeChannel}
+      activeChannelEphemeralDisplay={activeChannelEphemeralDisplay}
+      activeChannelTitle={activeChannelTitle}
+      actionsVariant={shouldCompactHeaderActions ? "compact" : "inline"}
+      activeDmAvatarUrl={activeDmAvatarUrl}
+      activeDmHeaderParticipants={activeDmHeaderParticipants}
+      activeDmPresenceStatus={activeDmPresenceStatus}
+      chromeWrapperRef={channelHeaderChromeRef}
+      currentPubkey={currentPubkey}
+      isAddBotOpen={legacySurfacesEnabled ? isAddBotOpen : false}
+      isJoining={legacySurfacesEnabled && joinChannelMutation.isPending}
+      onAddBotOpenChange={legacySurfacesEnabled ? setIsAddBotOpen : undefined}
+      onJoinChannel={
+        legacySurfacesEnabled ? joinChannelMutation.mutateAsync : undefined
+      }
+      onManageChannel={legacySurfacesEnabled ? handleManageChannel : undefined}
+      onToggleMembers={legacySurfacesEnabled ? handleToggleMembers : undefined}
+      showHeaderContent={!isSinglePanelView}
+      transparentChrome={activeChannel?.channelType !== "forum"}
+    />
   );
-  return (
-    <AgentSessionProvider onOpenAgentSession={handleOpenAgentSession}>
-      <ProfilePanelProvider onOpenProfilePanel={handleOpenProfilePanel}>
-        <WelcomeAgentCreateDialog
-          guideName={welcomeGuideAgent?.name ?? "your welcome guide"}
-          isSending={welcomeAgentCreate.isSending}
-          onCreateInChat={() => void welcomeAgentCreate.createInChat()}
-          onCreateManually={welcomeAgentCreate.createManually}
-          onOpenChange={welcomeAgentCreate.setIsOpen}
-          open={welcomeAgentCreate.isOpen}
-          sendError={welcomeAgentCreate.error}
-        />
-        <DeleteMessageConfirmDialog
-          onConfirm={() => {
-            if (emptyDeleteId) {
-              setEditTargetId(null);
-              void handleDelete({ id: emptyDeleteId });
+  const legacyPaneProps = legacySurfacesEnabled
+    ? {
+        activityAgents: channelAgentSessionAgents,
+        agentSessionAgents,
+        channelManagementOpen,
+        editTarget: editTargetMessage
+          ? {
+              author: editTargetMessage.author,
+              body: editTargetMessage.body,
+              id: editTargetMessage.id,
+              imetaMedia: imetaMediaFromTags(editTargetMessage.tags),
             }
-            setEmptyDeleteId(null);
-          }}
-          onOpenChange={(open) => {
-            if (!open) setEmptyDeleteId(null);
-          }}
-          open={emptyDeleteId !== null}
-        />
+          : null,
+        isJoining: joinChannelMutation.isPending,
+        onAddAgent: handleOpenAddBot,
+        onBrowseChannels: openBrowseChannels,
+        onCreateChannel: openCreateChannel,
+        onDelete: activeChannel?.archivedAt ? undefined : handleDelete,
+        onEdit: activeChannel?.archivedAt ? undefined : handleEdit,
+        onEditSave: activeChannel?.archivedAt ? undefined : handleEditSave,
+        onJoinChannel: joinChannelMutation.mutateAsync,
+        onOpenMembers: handleOpenMembersSidebar,
+        openAgentSessionChannelId,
+        openAgentSessionPubkey,
+      }
+    : {
+        activityAgents: [],
+        agentSessionAgents: [],
+        channelManagementOpen: false,
+        editTarget: null,
+        isJoining: false,
+        onDelete: undefined,
+        onEdit: undefined,
+        onEditSave: undefined,
+        openAgentSessionChannelId: null,
+        openAgentSessionPubkey: null,
+      };
+  return (
+    <AgentSessionProvider
+      onOpenAgentSession={legacySurfacesEnabled ? handleOpenAgentSession : null}
+    >
+      <ProfilePanelProvider onOpenProfilePanel={handleOpenProfilePanel}>
+        {legacySurfacesEnabled ? (
+          <>
+            <WelcomeAgentCreateDialog
+              guideName={welcomeGuideAgent?.name ?? "your welcome guide"}
+              isSending={welcomeAgentCreate.isSending}
+              onCreateInChat={() => void welcomeAgentCreate.createInChat()}
+              onCreateManually={welcomeAgentCreate.createManually}
+              onOpenChange={welcomeAgentCreate.setIsOpen}
+              open={welcomeAgentCreate.isOpen}
+              sendError={welcomeAgentCreate.error}
+            />
+            <DeleteMessageConfirmDialog
+              onConfirm={() => {
+                if (emptyDeleteId) {
+                  setEditTargetId(null);
+                  void handleDelete({ id: emptyDeleteId });
+                }
+                setEmptyDeleteId(null);
+              }}
+              onOpenChange={(open) => {
+                if (!open) setEmptyDeleteId(null);
+              }}
+              open={emptyDeleteId !== null}
+            />
+          </>
+        ) : null}
         <div
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
           ref={channelContentRef}
@@ -852,43 +878,25 @@ export function ChannelScreen({
                 fallback={<ViewLoadingFallback includeHeader kind="channel" />}
               >
                 <ChannelPane
+                  {...legacyPaneProps}
                   activeChannel={activeChannel}
-                  activityAgents={channelAgentSessionAgents}
                   agentPubkeys={agentPubkeys}
                   agentPubkeysPending={agentPubkeysPending}
-                  agentSessionAgents={agentSessionAgents}
                   autoSendDraftKey={autoSendDraftKey}
                   onAutoSendComplete={clearAutoSend}
                   botTypingEntries={botTypingEntries}
                   channelFind={channelFind}
-                  channelManagementOpen={channelManagementOpen}
                   currentPubkey={currentPubkey}
                   canResetThreadPanelWidth={canResetThreadPanelWidth}
                   fetchOlder={fetchOlder}
                   header={channelHeader}
                   hasOlderMessages={hasOlderMessages}
                   historyExhausted={historyExhausted}
-                  onAddAgent={handleOpenAddBot}
-                  onBrowseChannels={openBrowseChannels}
-                  onCreateChannel={openCreateChannel}
-                  onOpenMembers={handleOpenMembersSidebar}
                   isFetchingOlder={isFetchingOlder}
                   entranceMessageId={welcomeEntranceMessageId}
                   onEntranceMessageComplete={handleWelcomeEntranceComplete}
                   welcomeKickoffStage={welcomeKickoffStage}
                   welcomeKickoffSettingUp={welcomeKickoffSettingUp}
-                  editTarget={
-                    editTargetMessage
-                      ? {
-                          author: editTargetMessage.author,
-                          body: editTargetMessage.body,
-                          id: editTargetMessage.id,
-                          imetaMedia: imetaMediaFromTags(
-                            editTargetMessage.tags,
-                          ),
-                        }
-                      : null
-                  }
                   followThreadById={followThread}
                   unfollowThreadById={unfollowThread}
                   isFollowingThreadById={isFollowingThread}
@@ -922,13 +930,6 @@ export function ChannelScreen({
                   }
                   onCloseChannelManagement={handleCloseChannelManagement}
                   onCloseThread={handleCloseThread}
-                  onDelete={
-                    activeChannel?.archivedAt ? undefined : handleDelete
-                  }
-                  onEdit={activeChannel?.archivedAt ? undefined : handleEdit}
-                  onEditSave={
-                    activeChannel?.archivedAt ? undefined : handleEditSave
-                  }
                   onMarkUnread={handleMessageMarkUnread}
                   onMarkRead={handleMessageMarkRead}
                   onExpandThreadReplies={handleExpandThreadReplies}
@@ -948,8 +949,6 @@ export function ChannelScreen({
                   onThreadPanelResizeStart={handleThreadPanelResizeStart}
                   onTargetReached={handleTargetReached}
                   onToggleReaction={effectiveToggleReaction}
-                  openAgentSessionChannelId={openAgentSessionChannelId}
-                  openAgentSessionPubkey={openAgentSessionPubkey}
                   openThreadHeadId={effectiveOpenThreadHeadId}
                   shouldShowThreadSkeleton={shouldShowThreadSkeleton}
                   onProfilePanelViewChange={setProfilePanelView}
@@ -974,8 +973,6 @@ export function ChannelScreen({
                   threadUnreadCounts={threadUnreadCounts}
                   threadReplyUnreadCounts={threadReplyUnreadCounts}
                   threadFirstUnreadReplyId={displayedThreadFirstUnreadReplyId}
-                  isJoining={joinChannelMutation.isPending}
-                  onJoinChannel={joinChannelMutation.mutateAsync}
                   typingPubkeys={humanTypingPubkeys}
                 />
               </React.Suspense>
@@ -984,14 +981,16 @@ export function ChannelScreen({
             <ChannelScreenEmptyState />
           )}
         </div>
-        <MembersSidebar
-          channel={activeChannel}
-          currentPubkey={currentPubkey}
-          open={isMembersSidebarOpen}
-          onOpenChange={setIsMembersSidebarOpen}
-          onViewActivity={handleOpenAgentSession}
-          relayUrl={activeCommunity?.relayUrl}
-        />
+        {legacySurfacesEnabled ? (
+          <MembersSidebar
+            channel={activeChannel}
+            currentPubkey={currentPubkey}
+            open={isMembersSidebarOpen}
+            onOpenChange={setIsMembersSidebarOpen}
+            onViewActivity={handleOpenAgentSession}
+            relayUrl={activeCommunity?.relayUrl}
+          />
+        ) : null}
       </ProfilePanelProvider>
     </AgentSessionProvider>
   );

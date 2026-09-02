@@ -237,6 +237,9 @@ pub(crate) fn spawn_key_refusal(record: &ManagedAgentRecord) -> Option<String> {
 /// Read the raw unified store — keyed instances AND key-less definitions —
 /// with fail-loud parse handling. Internal seam; public readers filter.
 fn load_agent_store(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> {
+    if crate::local_owner_profile::profile_active() {
+        return Ok(Vec::new());
+    }
     let path = managed_agents_store_path(app)?;
     if !path.exists() {
         return Ok(Vec::new());

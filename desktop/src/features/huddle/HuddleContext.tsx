@@ -42,6 +42,8 @@ function clamp01(value: number): number {
 }
 
 interface HuddleContextValue {
+  /** Whether this build exposes the human huddle surface. */
+  available: boolean;
   /** Current local audio track (for mute toggle in HuddleBar) */
   localAudioTrack: MediaStreamTrack | null;
   /** Whether a huddle is being started (for button disabled state) */
@@ -98,7 +100,54 @@ interface HuddleContextValue {
 
 const HuddleContext = React.createContext<HuddleContextValue | null>(null);
 
-export function HuddleProvider({ children }: { children: React.ReactNode }) {
+const huddleUnavailable = async () => {
+  throw new Error("Huddles are unavailable in this Buzz profile.");
+};
+
+const DISABLED_HUDDLE_CONTEXT: HuddleContextValue = {
+  available: false,
+  localAudioTrack: null,
+  isStarting: false,
+  huddleError: null,
+  clearHuddleError: () => {},
+  micConnected: false,
+  micLevel: 0,
+  pttActive: false,
+  voiceInputMode: "voice_activity",
+  setVoiceInputMode: huddleUnavailable,
+  activeSpeakers: [],
+  audioDevices: [],
+  selectedDeviceId: "",
+  setSelectedDeviceId: () => {},
+  micGain: 1,
+  setMicGain: () => {},
+  outputDevices: [],
+  selectedOutputDevice: "",
+  setSelectedOutputDevice: () => {},
+  activeEphemeralChannelId: null,
+  startHuddle: huddleUnavailable,
+  joinHuddle: huddleUnavailable,
+  leaveHuddle: async () => false,
+};
+
+export function HuddleProvider({
+  children,
+  enabled = true,
+}: {
+  children: React.ReactNode;
+  enabled?: boolean;
+}) {
+  if (!enabled) {
+    return (
+      <HuddleContext.Provider value={DISABLED_HUDDLE_CONTEXT}>
+        {children}
+      </HuddleContext.Provider>
+    );
+  }
+  return <ActiveHuddleProvider>{children}</ActiveHuddleProvider>;
+}
+
+function ActiveHuddleProvider({ children }: { children: React.ReactNode }) {
   const workletRef = React.useRef<AudioWorkletHandle | null>(null);
   const tokenRef = React.useRef(0);
   const busyRef = React.useRef(false);
@@ -689,6 +738,7 @@ export function HuddleProvider({ children }: { children: React.ReactNode }) {
   return (
     <HuddleContext.Provider
       value={{
+        available: true,
         localAudioTrack,
         isStarting,
         huddleError,

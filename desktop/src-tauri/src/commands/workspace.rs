@@ -1,9 +1,21 @@
+#[cfg(feature = "local-owner-profile")]
+use base64::{engine::general_purpose::STANDARD, Engine};
+#[cfg(feature = "local-owner-profile")]
+use futures_util::StreamExt;
+#[cfg(not(feature = "local-owner-profile"))]
 use nostr::Keys;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+#[cfg(not(feature = "local-owner-profile"))]
+use serde::Serialize;
+#[cfg(not(feature = "local-owner-profile"))]
 use std::sync::atomic::Ordering;
+#[cfg(not(feature = "local-owner-profile"))]
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(feature = "local-owner-profile")]
+use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::managed_agents::{
     effective_repos_dir, ensure_repos_symlink, nest_dir, restore_managed_agents_on_launch,
     try_regenerate_nest, write_persisted_repos_dir,
@@ -15,6 +27,7 @@ use crate::relay;
 /// Best-effort: a failure is logged and the boot proceeds. The migration's own
 /// crash-safety guards make the next launch retry safely, and blocking the
 /// workspace apply on it would be worse than a delayed publish.
+#[cfg(not(feature = "local-owner-profile"))]
 fn migrate_legacy_retention_into(
     app: &AppHandle,
     scope: &crate::managed_agents::retention::RetentionScope,
@@ -41,6 +54,31 @@ struct RelayInfoIcon {
     icon: Option<String>,
 }
 
+#[cfg(feature = "local-owner-profile")]
+const MAX_RELAY_INFO_BYTES: usize = 1024 * 1024;
+#[cfg(feature = "local-owner-profile")]
+const MAX_WORKSPACE_ICON_BYTES: usize = 512 * 1024;
+
+#[cfg(feature = "local-owner-profile")]
+fn bounded_data_icon(icon: String) -> Option<String> {
+    let (media_type, encoded) = icon.split_once(',')?;
+    let is_png = media_type == "data:image/png;base64";
+    let is_jpeg = media_type == "data:image/jpeg;base64";
+    if (!is_png && !is_jpeg) || encoded.len() > MAX_WORKSPACE_ICON_BYTES.saturating_mul(4) / 3 + 4 {
+        return None;
+    }
+    let decoded = STANDARD.decode(encoded).ok()?;
+    if decoded.len() > MAX_WORKSPACE_ICON_BYTES {
+        return None;
+    }
+    let valid_magic = if is_png {
+        decoded.starts_with(b"\x89PNG\r\n\x1a\n")
+    } else {
+        decoded.starts_with(&[0xff, 0xd8, 0xff]) && decoded.ends_with(&[0xff, 0xd9])
+    };
+    valid_magic.then_some(icon)
+}
+
 /// Fetch a relay's workspace icon from its NIP-11 relay information document.
 ///
 /// Works for any workspace (active or not) with a plain unauthenticated HTTP
@@ -48,6 +86,7 @@ struct RelayInfoIcon {
 /// icon set, is unreachable, or serves a malformed document: the rail falls
 /// back to initials in all three cases.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn fetch_workspace_icon(
     relay_url: String,
     state: State<'_, AppState>,
@@ -72,7 +111,50 @@ pub async fn fetch_workspace_icon(
     Ok(doc.icon.filter(|icon| !icon.is_empty()))
 }
 
+#[tauri::command]
+#[cfg(feature = "local-owner-profile")]
+pub async fn fetch_workspace_icon(
+    relay_url: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    crate::local_owner_profile::require_relay(&relay_url)?;
+    let http_url = relay::relay_http_base_url(&relay_url);
+    let response = state
+        .http_client
+        .get(&http_url)
+        .header("Accept", "application/nostr+json")
+        .send()
+        .await
+        .map_err(|error| format!("relay information request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RELAY_INFO_BYTES as u64)
+    {
+        return Ok(None);
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("read relay information: {error}"))?;
+        if body.len().saturating_add(chunk.len()) > MAX_RELAY_INFO_BYTES {
+            return Ok(None);
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let relay_info: RelayInfoIcon = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    Ok(relay_info.icon.and_then(bounded_data_icon))
+}
+
 #[derive(Serialize)]
+#[cfg(not(feature = "local-owner-profile"))]
 pub struct ActiveWorkspaceInfo {
     relay_url: String,
     pubkey: String,
@@ -80,6 +162,7 @@ pub struct ActiveWorkspaceInfo {
 
 /// Returns the current active workspace info (relay URL + pubkey).
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn get_active_workspace(state: State<'_, AppState>) -> Result<ActiveWorkspaceInfo, String> {
     let keys = state.keys.lock().map_err(|e| e.to_string())?;
     let relay_url = relay::relay_ws_url_with_override(&state);
@@ -97,6 +180,7 @@ pub fn get_active_workspace(state: State<'_, AppState>) -> Result<ActiveWorkspac
 /// "what's a valid repos dir". An empty/whitespace value clears the override
 /// and is valid. `Err` carries the human-readable reason for inline display.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn validate_repos_dir(dir: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let trimmed = dir.trim();
@@ -124,6 +208,7 @@ pub async fn validate_repos_dir(dir: String) -> Result<(), String> {
 /// already block a bad path at Save (`validate_repos_dir`); this fallback only
 /// catches a value that went bad after save (deleted dir, unmounted volume).
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn apply_workspace(
     relay_url: String,
     nsec: Option<String>,
@@ -280,5 +365,43 @@ pub async fn apply_workspace(
         });
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(feature = "local-owner-profile")]
+pub async fn apply_workspace(
+    relay_url: String,
+    nsec: Option<String>,
+    repos_dir: Option<String>,
+    agent_managed_profiles: Option<bool>,
+    app: AppHandle,
+) -> Result<(), String> {
+    crate::local_owner_profile::require_relay(&relay_url)?;
+    if nsec
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(
+            "local-owner build refuses workspace key injection; use the production keyring"
+                .to_string(),
+        );
+    }
+    if repos_dir
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || agent_managed_profiles == Some(true)
+    {
+        return Err("local-owner build refuses agent workspace configuration".to_string());
+    }
+
+    let state = app.state::<AppState>();
+    let mut relay_override = state
+        .relay_url_override
+        .lock()
+        .map_err(|error| error.to_string())?;
+    *relay_override = Some(relay_url);
+    drop(relay_override);
+    crate::relay_admission::reset_gate_for_workspace_change();
     Ok(())
 }

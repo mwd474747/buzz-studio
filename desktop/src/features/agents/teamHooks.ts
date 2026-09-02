@@ -14,10 +14,11 @@ import type {
 
 export const teamsQueryKey = ["teams"] as const;
 
-export function useTeamsQuery() {
+export function useTeamsQuery(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: teamsQueryKey,
     queryFn: listTeams,
+    enabled: options?.enabled,
     staleTime: 30_000,
     // No refetchInterval: inbound relay team changes emit `agents-data-changed`
     // (handled by useAgentsDataRefresh). Same redundant-poll removal as

@@ -25,8 +25,8 @@ type AppSidebarPinnedHeaderProps = {
   channelLabels: Record<string, string>;
   currentPubkey?: string;
   onBrowseChannels?: () => void;
-  onCreateAgent: () => void;
-  onCreateChannel: () => void;
+  onCreateAgent?: () => void;
+  onCreateChannel?: () => void;
   onOpenDm: (input: { pubkeys: string[] }) => Promise<void>;
   onOpenSearchResult: (hit: SearchHit) => void;
   onSelectChannel: (channelId: string) => void;
@@ -37,6 +37,7 @@ type AppSidebarPinnedHeaderProps = {
 
 type AppSidebarPrimaryMenuProps = {
   homeBadgeCount: number;
+  legacySurfacesEnabled: boolean;
   onSelectAgents: () => void;
   onSelectHome: () => void;
   onSelectProjects: () => void;
@@ -82,6 +83,7 @@ export function AppSidebarPinnedHeader({
 
 export function AppSidebarPrimaryMenu({
   homeBadgeCount,
+  legacySurfacesEnabled,
   onSelectAgents,
   onSelectHome,
   onSelectProjects,
@@ -115,60 +117,68 @@ export function AppSidebarPrimaryMenu({
             </SidebarMenuBadge>
           ) : null}
         </SidebarMenuItem>
-        <FeatureGate feature="pulse">
+        {legacySurfacesEnabled ? (
+          <FeatureGate feature="pulse">
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                data-testid="open-pulse-view"
+                isActive={selectedView === "pulse"}
+                onClick={onSelectPulse}
+                tooltip="Pulse"
+                type="button"
+              >
+                <Activity className="h-4 w-4" />
+                <SidebarMenuLabel>Pulse</SidebarMenuLabel>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </FeatureGate>
+        ) : null}
+        {legacySurfacesEnabled ? (
+          <FeatureGate feature="projects">
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                data-testid="open-projects-view"
+                isActive={selectedView === "projects"}
+                onClick={onSelectProjects}
+                tooltip="Projects"
+                type="button"
+              >
+                <FolderGit2 className="h-4 w-4" />
+                <SidebarMenuLabel>Projects</SidebarMenuLabel>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </FeatureGate>
+        ) : null}
+        {legacySurfacesEnabled ? (
           <SidebarMenuItem>
             <SidebarMenuButton
-              data-testid="open-pulse-view"
-              isActive={selectedView === "pulse"}
-              onClick={onSelectPulse}
-              tooltip="Pulse"
+              data-testid="open-agents-view"
+              isActive={selectedView === "agents"}
+              onClick={onSelectAgents}
+              tooltip="Agents"
               type="button"
             >
-              <Activity className="h-4 w-4" />
-              <SidebarMenuLabel>Pulse</SidebarMenuLabel>
+              <Bot className="h-4 w-4" />
+              <SidebarMenuLabel>Agents</SidebarMenuLabel>
             </SidebarMenuButton>
           </SidebarMenuItem>
-        </FeatureGate>
-        <FeatureGate feature="projects">
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              data-testid="open-projects-view"
-              isActive={selectedView === "projects"}
-              onClick={onSelectProjects}
-              tooltip="Projects"
-              type="button"
-            >
-              <FolderGit2 className="h-4 w-4" />
-              <SidebarMenuLabel>Projects</SidebarMenuLabel>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </FeatureGate>
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            data-testid="open-agents-view"
-            isActive={selectedView === "agents"}
-            onClick={onSelectAgents}
-            tooltip="Agents"
-            type="button"
-          >
-            <Bot className="h-4 w-4" />
-            <SidebarMenuLabel>Agents</SidebarMenuLabel>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-        <FeatureGate feature="workflows">
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              data-testid="open-workflows-view"
-              isActive={selectedView === "workflows"}
-              onClick={onSelectWorkflows}
-              tooltip="Workflows"
-              type="button"
-            >
-              <Zap className="h-4 w-4" />
-              <SidebarMenuLabel>Workflows</SidebarMenuLabel>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </FeatureGate>
+        ) : null}
+        {legacySurfacesEnabled ? (
+          <FeatureGate feature="workflows">
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                data-testid="open-workflows-view"
+                isActive={selectedView === "workflows"}
+                onClick={onSelectWorkflows}
+                tooltip="Workflows"
+                type="button"
+              >
+                <Zap className="h-4 w-4" />
+                <SidebarMenuLabel>Workflows</SidebarMenuLabel>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </FeatureGate>
+        ) : null}
       </SidebarMenu>
     </SidebarHeader>
   );

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Navigate } from "@tanstack/react-router";
 
 import {
   parseProfilePanelTab,
@@ -8,6 +8,7 @@ import {
   type ProfilePanelView,
 } from "@/features/profile/ui/UserProfilePanelUtils";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 
 type AgentsRouteSearch = {
   profile?: string;
@@ -42,6 +43,13 @@ export const Route = createFileRoute("/agents")({
 });
 
 function AgentsRouteComponent() {
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  if (localOwnerPolicy === "loading") {
+    return <ViewLoadingFallback kind="agents" />;
+  }
+  if (localOwnerPolicy !== "inactive") {
+    return <Navigate replace to="/" />;
+  }
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="agents" />}>
       <AgentsScreen />

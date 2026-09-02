@@ -15,10 +15,12 @@ export function AgentSessionProvider({
   onOpenAgentSession,
 }: {
   children: React.ReactNode;
-  onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
+  onOpenAgentSession?:
+    | ((pubkey: string, channelId?: string | null) => void)
+    | null;
 }) {
   const value = React.useMemo(
-    () => ({ onOpenAgentSession }),
+    () => ({ onOpenAgentSession: onOpenAgentSession ?? null }),
     [onOpenAgentSession],
   );
 

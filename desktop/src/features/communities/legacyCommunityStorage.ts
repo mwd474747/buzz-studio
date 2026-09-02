@@ -1,5 +1,10 @@
 import { invokeTauri } from "@/shared/api/tauri";
-import { migrateLegacyCommunityStorage } from "./communityStorage";
+import { getLocalOwnerProfile } from "@/shared/api/tauriLocalOwner";
+import {
+  canonicalizeLocalOwnerCommunity,
+  migrateLegacyCommunityStorage,
+} from "./communityStorage";
+import type { Community } from "./types";
 
 const BUZZ_COMMUNITIES_KEY = "buzz-communities";
 const BUZZ_ACTIVE_COMMUNITY_KEY = "buzz-active-community-id";
@@ -20,7 +25,10 @@ type LegacyCommunityStorageSnapshot = {
 };
 
 type StoredCommunity = {
+  id?: unknown;
   relayUrl?: unknown;
+  pubkey?: unknown;
+  addedAt?: unknown;
 };
 
 function parseCommunityList(raw: string | null): StoredCommunity[] | null {
@@ -36,7 +44,39 @@ function parseCommunityList(raw: string | null): StoredCommunity[] | null {
   }
 }
 
-function normalizeRelayUrl(relayUrl: string) {
+function readExactStoredLocalOwnerCommunity(
+  storage: Storage,
+  relayUrl: string,
+  ownerPubkey: string,
+): Community | null {
+  const communities = parseCommunityList(storage.getItem(BUZZ_COMMUNITIES_KEY));
+  if (!communities) return null;
+
+  const normalizedRelayUrl = normalizeStoredRelayUrl(relayUrl);
+  const activeId = storage.getItem(BUZZ_ACTIVE_COMMUNITY_KEY);
+  const exact = communities.filter(
+    (community) =>
+      typeof community.id === "string" &&
+      community.id.length > 0 &&
+      typeof community.addedAt === "string" &&
+      community.addedAt.length > 0 &&
+      community.relayUrl === normalizedRelayUrl &&
+      community.pubkey === ownerPubkey,
+  );
+  const current =
+    exact.find((community) => community.id === activeId) ?? exact[0];
+  if (!current) return null;
+
+  return {
+    id: current.id as string,
+    name: "Local Dev",
+    relayUrl: normalizedRelayUrl,
+    pubkey: ownerPubkey,
+    addedAt: current.addedAt as string,
+  };
+}
+
+function normalizeStoredRelayUrl(relayUrl: string) {
   return relayUrl.trim().replace(/\/$/, "");
 }
 
@@ -45,7 +85,7 @@ function hasOnlyLocalDevCommunity(raw: string | null): boolean {
   return (
     communities?.length === 1 &&
     typeof communities[0]?.relayUrl === "string" &&
-    LOCAL_DEV_RELAY_URLS.has(normalizeRelayUrl(communities[0].relayUrl))
+    LOCAL_DEV_RELAY_URLS.has(normalizeStoredRelayUrl(communities[0].relayUrl))
   );
 }
 
@@ -110,17 +150,49 @@ export function applyLegacyCommunityStorage(
  * Buzz does not already have community state, except for the known broken
  * Sprout→Buzz first-run handoff that created a single localhost community.
  */
-export async function migrateLegacyCommunityStorageBeforeRender(): Promise<void> {
-  if (typeof window === "undefined") {
+export async function migrateLegacyCommunityStorageBeforeRender(
+  storage: Storage | undefined = typeof window === "undefined"
+    ? undefined
+    : window.localStorage,
+  resolveLocalOwnerProfile = getLocalOwnerProfile,
+  readLegacyStorage = () =>
+    invokeTauri<LegacyCommunityStorageSnapshot>("get_legacy_workspace_storage"),
+): Promise<void> {
+  if (!storage) {
     return;
   }
 
-  migrateLegacyCommunityStorage(window.localStorage);
-  const currentCommunitiesRaw =
-    window.localStorage.getItem(BUZZ_COMMUNITIES_KEY);
-  const hasCurrentActiveCommunity = window.localStorage.getItem(
-    BUZZ_ACTIVE_COMMUNITY_KEY,
-  );
+  let localOwnerProfile: Awaited<ReturnType<typeof resolveLocalOwnerProfile>>;
+  try {
+    localOwnerProfile = await resolveLocalOwnerProfile();
+  } catch (error) {
+    console.error("Refusing to mount without a resolved native policy.", error);
+    throw error;
+  }
+  if (localOwnerProfile !== null) {
+    const current = readExactStoredLocalOwnerCommunity(
+      storage,
+      localOwnerProfile.relay_ws_url,
+      localOwnerProfile.owner_pubkey,
+    );
+    if (
+      canonicalizeLocalOwnerCommunity(
+        current,
+        localOwnerProfile.relay_ws_url,
+        localOwnerProfile.owner_pubkey,
+        storage,
+      ) === null
+    ) {
+      throw new Error(
+        "could not establish clean local-owner community storage",
+      );
+    }
+    return;
+  }
+
+  migrateLegacyCommunityStorage(storage);
+  const currentCommunitiesRaw = storage.getItem(BUZZ_COMMUNITIES_KEY);
+  const hasCurrentActiveCommunity = storage.getItem(BUZZ_ACTIVE_COMMUNITY_KEY);
   if (
     currentCommunitiesRaw &&
     hasCurrentActiveCommunity &&
@@ -130,11 +202,7 @@ export async function migrateLegacyCommunityStorageBeforeRender(): Promise<void>
   }
 
   try {
-    applyLegacyCommunityStorage(
-      await invokeTauri<LegacyCommunityStorageSnapshot>(
-        "get_legacy_workspace_storage",
-      ),
-    );
+    applyLegacyCommunityStorage(await readLegacyStorage(), storage);
   } catch (error) {
     console.warn("Failed to read legacy Sprout community storage.", error);
   }

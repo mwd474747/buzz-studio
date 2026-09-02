@@ -172,8 +172,13 @@ export const MessageRow = React.memo(
       errorMessage: reactionErrorMessage,
       select: handleReactionSelect,
     } = useReactionHandler(message, onToggleReaction);
-    const { openReminder, activeReminderEventIds } = useRemindLater();
-    const hasActiveReminder = activeReminderEventIds.has(message.id);
+    const {
+      enabled: remindersEnabled,
+      openReminder,
+      activeReminderEventIds,
+    } = useRemindLater();
+    const hasActiveReminder =
+      remindersEnabled && activeReminderEventIds.has(message.id);
     const handleRemindLater = React.useCallback(
       (msg: TimelineMessage) => {
         openReminder({
@@ -509,7 +514,7 @@ export const MessageRow = React.memo(
           onReactionSelect={
             canToggleReactions ? handleReactionSelect : undefined
           }
-          onRemindLater={handleRemindLater}
+          onRemindLater={remindersEnabled ? handleRemindLater : undefined}
           onReply={onReply}
           onUnfollowThread={onUnfollowThread}
           reactionErrorMessage={reactionErrorMessage}

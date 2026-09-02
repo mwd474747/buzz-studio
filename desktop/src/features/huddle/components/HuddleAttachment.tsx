@@ -124,7 +124,8 @@ export function HuddleAttachment({
     () => parseEphemeralChannelId(message.body),
     [message.body],
   );
-  const { activeEphemeralChannelId, isStarting, joinHuddle } = useHuddle();
+  const { activeEphemeralChannelId, available, isStarting, joinHuddle } =
+    useHuddle();
   const queryClient = useQueryClient();
   const [isJoining, setIsJoining] = React.useState(false);
   const [lifecycleState, setLifecycleState] =
@@ -207,7 +208,8 @@ export function HuddleAttachment({
   const isStaleUnconfirmedHuddle =
     !isCurrentHuddle && isHuddleStartStale(message.createdAt);
   const canJoin = Boolean(
-    channelId &&
+    available &&
+      channelId &&
       ephemeralChannelId &&
       !isEnded &&
       !isCurrentHuddle &&

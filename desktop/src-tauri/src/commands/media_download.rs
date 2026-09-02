@@ -1,4 +1,5 @@
 use futures_util::StreamExt;
+#[cfg(not(feature = "local-owner-profile"))]
 use sha2::{Digest, Sha256};
 use tauri::State;
 
@@ -6,6 +7,8 @@ use crate::app_state::AppState;
 use crate::commands::clipboard::with_clipboard;
 use crate::commands::export_util::save_bytes_with_dialog;
 use crate::commands::media::{detect_and_validate_mime, mint_media_get_auth, sanitize_filename};
+use crate::commands::media_download_policy::redirect_refusal_error;
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::commands::{
     personas::{
         parse_snapshot_payload_from_bytes, MAX_SNAPSHOT_JSON_BYTES, MAX_SNAPSHOT_PNG_BYTES,
@@ -258,24 +261,6 @@ async fn fetch_blob_bytes(url: &str, state: &State<'_, AppState>) -> Result<Vec<
     fetch_blob_bytes_with_cap(url, state, MAX_DOWNLOAD_BYTES).await
 }
 
-/// The command-facing error for a media-fetch response status, or `None` if
-/// the status is success and the body should be read.
-///
-/// A no-redirect client surfaces a relay 3xx as a redirection status rather
-/// than following it; that is reported explicitly as a redirect (not a bare
-/// "relay returned 302") so the failure is actionable and cannot be mistaken
-/// for an ordinary relay error — following it would forward the minted media
-/// auth header across origins. Pulled out of `fetch_blob_bytes_with_cap` so
-/// the redirect-refusal message is unit-testable without a Tauri `State`.
-fn redirect_refusal_error(status: reqwest::StatusCode) -> Option<String> {
-    status.is_redirection().then(|| {
-        format!(
-            "media fetch refused: relay returned a {status} redirect, which is \
-             not followed for authenticated downloads (redirect-hop SSRF guard)"
-        )
-    })
-}
-
 /// Core streaming fetcher with a caller-supplied byte cap.
 async fn fetch_blob_bytes_with_cap(
     url: &str,
@@ -335,6 +320,7 @@ async fn fetch_blob_bytes_with_cap(
 /// The snapshot file format inferred from the sanitized filename suffix.
 /// Carries the format-specific byte cap used during bounded fetch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) enum SnapshotFileKind {
     /// `.agent.json` — plaintext JSON; accepts memory; 5 MiB cap.
     AgentJson,
@@ -346,6 +332,7 @@ pub(crate) enum SnapshotFileKind {
     TeamPng,
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 impl SnapshotFileKind {
     fn cap(self) -> u64 {
         match self {
@@ -375,6 +362,7 @@ impl SnapshotFileKind {
 /// PNG magic (`\x89PNG`) is required for `Png` and must be absent for `Json`.
 /// Returns an error with a clear message on mismatch so that `fetch_snapshot_bytes`
 /// fails closed before any bytes reach the frontend.
+#[cfg(not(feature = "local-owner-profile"))]
 fn ensure_bytes_match_kind(bytes: &[u8], kind: SnapshotFileKind) -> Result<(), String> {
     let has_png_magic = bytes.len() >= 4 && bytes[..4] == PNG_MAGIC;
     if kind.is_png() && !has_png_magic {
@@ -394,6 +382,7 @@ fn ensure_bytes_match_kind(bytes: &[u8], kind: SnapshotFileKind) -> Result<(), S
 
 /// Determine whether a sanitized filename is a valid agent snapshot candidate.
 /// Returns the `SnapshotFileKind` for the extension, or an error.
+#[cfg(not(feature = "local-owner-profile"))]
 fn snapshot_kind_for_filename(filename: &str) -> Result<SnapshotFileKind, String> {
     let lower = filename.to_ascii_lowercase();
     if lower.ends_with(".agent.json") {
@@ -416,6 +405,7 @@ fn snapshot_kind_for_filename(filename: &str) -> Result<SnapshotFileKind, String
 ///
 /// Keeping this as a pure helper makes the per-kind cap a testable production
 /// boundary, rather than relying on a duplicated test-side comparison.
+#[cfg(not(feature = "local-owner-profile"))]
 fn ensure_declared_size_within_cap(
     expected_size: usize,
     kind: SnapshotFileKind,
@@ -452,6 +442,7 @@ fn ensure_declared_size_within_cap(
 /// Returns `tauri::ipc::Response` so bytes cross IPC as a raw buffer rather
 /// than a JSON number array (which would be ~3× the size at the applicable cap).
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn fetch_snapshot_bytes(
     url: String,
     filename: String,
@@ -523,7 +514,7 @@ pub async fn fetch_snapshot_bytes(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 mod tests {
     use super::*;
 
@@ -937,7 +928,7 @@ mod tests {
         });
 
         // Drive the exact client the command path uses, not an ad-hoc one.
-        let client = crate::app_state::build_media_fetch_client()
+        let client = crate::app_state::boot::build_media_fetch_client()
             .expect("media fetch client must build with no-redirect policy");
         let resp = client
             .get(format!("http://{addr}/media/clip.mp4"))
@@ -975,7 +966,7 @@ mod tests {
         // panics loudly (see `build_app_state`) rather than substituting an
         // insecure client.
         assert!(
-            crate::app_state::build_media_fetch_client().is_ok(),
+            crate::app_state::boot::build_media_fetch_client().is_ok(),
             "media fetch client must build; a redirect-following fallback is forbidden",
         );
     }

@@ -46,10 +46,10 @@ export function migrateLegacyCommunityStorage(
   }
 }
 
-export function loadCommunities(): Community[] {
+export function loadCommunities(storage: Storage = localStorage): Community[] {
   try {
-    migrateLegacyCommunityStorage();
-    const raw = localStorage.getItem(COMMUNITIES_KEY);
+    migrateLegacyCommunityStorage(storage);
+    const raw = storage.getItem(COMMUNITIES_KEY);
     if (!raw) {
       return [];
     }
@@ -73,7 +73,14 @@ export function loadCommunities(): Community[] {
       return entry;
     }) as Community[];
     if (didStrip) {
-      setLocalStorageItemWithRecovery(COMMUNITIES_KEY, JSON.stringify(cleaned));
+      if (typeof localStorage !== "undefined" && storage === localStorage) {
+        setLocalStorageItemWithRecovery(
+          COMMUNITIES_KEY,
+          JSON.stringify(cleaned),
+        );
+      } else {
+        storage.setItem(COMMUNITIES_KEY, JSON.stringify(cleaned));
+      }
     }
     return cleaned;
   } catch {
@@ -95,9 +102,11 @@ export function clearCommunityStorage(storage: Storage = localStorage): void {
   storage.removeItem(LEGACY_ACTIVE_WORKSPACE_KEY);
 }
 
-export function loadActiveCommunityId(): string | null {
-  migrateLegacyCommunityStorage();
-  return localStorage.getItem(ACTIVE_COMMUNITY_KEY);
+export function loadActiveCommunityId(
+  storage: Storage = localStorage,
+): string | null {
+  migrateLegacyCommunityStorage(storage);
+  return storage.getItem(ACTIVE_COMMUNITY_KEY);
 }
 
 export function saveActiveCommunityId(id: string): boolean {
@@ -115,16 +124,83 @@ function isLocalRelayHost(hostname: string): boolean {
   return ["localhost", "127.0.0.1", "[::1]", "0.0.0.0"].includes(hostname);
 }
 
-export function shouldAutoConnectDefaultRelay(relayUrl: string): boolean {
+export function shouldAutoConnectDefaultRelay(
+  relayUrl: string,
+  allowLocalRelay = false,
+): boolean {
   try {
     const parsed = new URL(relayUrl);
     return (
       (parsed.protocol === "ws:" || parsed.protocol === "wss:") &&
-      !isLocalRelayHost(parsed.hostname)
+      (allowLocalRelay || !isLocalRelayHost(parsed.hostname))
     );
   } catch {
     return false;
   }
+}
+
+export function isLocalOwnerCommunity(
+  community: Community | null,
+  relayUrl: string,
+  ownerPubkey: string,
+): boolean {
+  return Boolean(
+    community &&
+      community.relayUrl === relayUrl &&
+      community.pubkey === ownerPubkey &&
+      !community.token &&
+      !community.reposDir,
+  );
+}
+
+export function canonicalizeLocalOwnerCommunity(
+  current: Community | null,
+  relayUrl: string,
+  ownerPubkey: string,
+  storage: Storage = localStorage,
+): { community: Community; changed: boolean } | null {
+  const normalizedUrl = normalizeRelayUrl(relayUrl);
+  const retainsIdentity =
+    current?.relayUrl === normalizedUrl && current.pubkey === ownerPubkey;
+  const community: Community = {
+    id: retainsIdentity ? current.id : crypto.randomUUID(),
+    name: "Local Dev",
+    relayUrl: normalizedUrl,
+    pubkey: ownerPubkey,
+    addedAt: retainsIdentity ? current.addedAt : new Date().toISOString(),
+  };
+  const serialized = JSON.stringify([community]);
+  const changed =
+    storage.getItem(COMMUNITIES_KEY) !== serialized ||
+    storage.getItem(ACTIVE_COMMUNITY_KEY) !== community.id ||
+    storage.getItem(LEGACY_WORKSPACES_KEY) !== null ||
+    storage.getItem(LEGACY_ACTIVE_WORKSPACE_KEY) !== null;
+  if (!changed) return { community, changed: false };
+
+  const priorCommunities = storage.getItem(COMMUNITIES_KEY);
+  const priorActive = storage.getItem(ACTIVE_COMMUNITY_KEY);
+  try {
+    storage.setItem(COMMUNITIES_KEY, serialized);
+    storage.setItem(ACTIVE_COMMUNITY_KEY, community.id);
+  } catch {
+    try {
+      if (priorCommunities === null) storage.removeItem(COMMUNITIES_KEY);
+      else storage.setItem(COMMUNITIES_KEY, priorCommunities);
+      if (priorActive === null) storage.removeItem(ACTIVE_COMMUNITY_KEY);
+      else storage.setItem(ACTIVE_COMMUNITY_KEY, priorActive);
+    } catch {
+      // The caller stays behind setup when storage cannot be made consistent.
+    }
+    return null;
+  }
+
+  try {
+    storage.removeItem(LEGACY_WORKSPACES_KEY);
+    storage.removeItem(LEGACY_ACTIVE_WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+  return { community, changed: true };
 }
 
 export function deriveCommunityName(relayUrl: string): string {

@@ -36,11 +36,13 @@ const KnownAgentPubkeysContext = React.createContext<ReadonlySet<string>>(
  */
 export function KnownAgentPubkeysProvider({
   children,
+  enabled = true,
 }: {
   children: React.ReactNode;
+  enabled?: boolean;
 }) {
-  const managedAgents = useManagedAgentsQuery().data;
-  const relayAgents = useRelayAgentsQuery().data;
+  const managedAgents = useManagedAgentsQuery({ enabled }).data;
+  const relayAgents = useRelayAgentsQuery({ enabled }).data;
 
   const merged = React.useMemo(
     () => mergeKnownAgentPubkeys(managedAgents, relayAgents),

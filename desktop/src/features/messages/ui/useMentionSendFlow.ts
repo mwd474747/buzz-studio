@@ -13,6 +13,7 @@ import {
 import { resolvePersonaRuntime } from "@/features/agents/lib/resolvePersonaRuntime";
 import { useAddChannelMembersMutation } from "@/features/channels/hooks";
 import { filterEffectiveExplicitAgentPubkeys } from "@/features/messages/lib/effectiveExplicitAgentPubkeys";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import type { UseChannelLinksResult } from "@/features/messages/lib/useChannelLinks";
 import type { UseEmojiAutocompleteResult } from "@/features/messages/lib/useEmojiAutocomplete";
 import {
@@ -165,6 +166,7 @@ export function useMentionSendFlow({
   onSuccessfulExplicitAgentAudience,
   resolvePostSendContent,
 }: UseMentionSendFlowOptions) {
+  const agentActionsEnabled = useLocalOwnerPolicy() === "inactive";
   const [pendingNonMemberSend, setPendingNonMemberSend] =
     React.useState<PendingNonMemberMentionSend | null>(null);
   const [nonMemberPromptError, setNonMemberPromptError] = React.useState<
@@ -194,11 +196,16 @@ export function useMentionSendFlow({
     useCreateChannelManagedAgentMutation(channelId);
   const provisionPersonaAgentMutation =
     useProvisionChannelManagedAgentMutation(channelId);
-  const availableRuntimesQuery = useAvailableAcpRuntimes();
-  const managedAgentsQuery = useManagedAgentsQuery();
+  const availableRuntimesQuery = useAvailableAcpRuntimes({
+    enabled: agentActionsEnabled,
+  });
+  const managedAgentsQuery = useManagedAgentsQuery({
+    enabled: agentActionsEnabled,
+  });
   const startAgentMutation = useStartManagedAgentMutation();
 
   const getManagedAgentsByPubkey = React.useCallback(async () => {
+    if (!agentActionsEnabled) return new Map<string, ManagedAgent>();
     const agents =
       managedAgentsQuery.data ??
       (await managedAgentsQuery.refetch()).data ??
@@ -207,11 +214,16 @@ export function useMentionSendFlow({
     return new Map(
       agents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
     );
-  }, [managedAgentsQuery.data, managedAgentsQuery.refetch]);
+  }, [
+    agentActionsEnabled,
+    managedAgentsQuery.data,
+    managedAgentsQuery.refetch,
+  ]);
 
   const getAvailableRuntimes = React.useCallback(async (): Promise<
     AcpRuntime[]
   > => {
+    if (!agentActionsEnabled) return [];
     const cached = availableRuntimesQuery.data ?? [];
     if (cached.length > 0 || !availableRuntimesQuery.isLoading) {
       return cached;
@@ -225,6 +237,7 @@ export function useMentionSendFlow({
         runtime.binaryPath !== null,
     );
   }, [
+    agentActionsEnabled,
     availableRuntimesQuery.data,
     availableRuntimesQuery.isLoading,
     availableRuntimesQuery.refetch,
@@ -237,6 +250,9 @@ export function useMentionSendFlow({
       preparedParticipantPubkeys: string[] = [],
       preparedManagedAgents: ManagedAgent[] = [],
     ) => {
+      if (!agentActionsEnabled) {
+        return { errors: [] as string[], pubkeys: [] as string[] };
+      }
       if (!capturedChannelId || mentionPubkeys.length === 0) {
         return {
           errors: [] as string[],
@@ -294,6 +310,7 @@ export function useMentionSendFlow({
       };
     },
     [
+      agentActionsEnabled,
       attachAgentMutation,
       getManagedAgentsByPubkey,
       mentions.memberPubkeys,
@@ -303,6 +320,9 @@ export function useMentionSendFlow({
 
   const createMentionedPersonaAgents = React.useCallback(
     async (trimmed: string, capturedChannelId: string) => {
+      if (!agentActionsEnabled) {
+        return { errors: [], agents: [], pubkeys: [] };
+      }
       const personaMentions = mentions.extractMentionPersonas(trimmed);
       if (!capturedChannelId || personaMentions.length === 0) {
         return {
@@ -377,6 +397,7 @@ export function useMentionSendFlow({
       };
     },
     [
+      agentActionsEnabled,
       createPersonaAgentMutation,
       channelType,
       getAvailableRuntimes,
@@ -583,6 +604,7 @@ export function useMentionSendFlow({
   const getNonMemberMentionPubkeys = React.useCallback(
     (pubkeys: string[]) => {
       if (
+        !agentActionsEnabled ||
         channelType === null ||
         channelType === "dm" ||
         !mentions.hasResolvedMembers
@@ -594,7 +616,12 @@ export function useMentionSendFlow({
         (pubkey) => !mentions.memberPubkeys.has(pubkey),
       );
     },
-    [channelType, mentions.hasResolvedMembers, mentions.memberPubkeys],
+    [
+      agentActionsEnabled,
+      channelType,
+      mentions.hasResolvedMembers,
+      mentions.memberPubkeys,
+    ],
   );
 
   const getDmThreadAgentMentionError = React.useCallback(

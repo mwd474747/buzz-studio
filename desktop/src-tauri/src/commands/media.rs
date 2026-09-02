@@ -10,10 +10,11 @@ use crate::relay::{
     relay_error_message,
 };
 
-use super::media_transcode::{
-    has_heic_extension, is_heic_file, is_video_file, transcode_and_extract_poster,
-    transcode_heic_path_to_jpeg_bytes,
-};
+#[cfg(not(feature = "local-owner-profile"))]
+use super::media_file_path::fd_real_path;
+use super::media_transcode::{has_heic_extension, is_heic_file, is_video_file};
+#[cfg(not(feature = "local-owner-profile"))]
+use super::media_transcode::{transcode_and_extract_poster, transcode_heic_path_to_jpeg_bytes};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobDescriptor {
@@ -50,67 +51,6 @@ fn extract_server_authority(url_str: &str) -> Option<String> {
         Some(port) => Some(format!("{host}:{port}")),
         None => Some(host.to_string()),
     }
-}
-
-/// Resolve the real filesystem path of an already-opened file descriptor.
-///
-/// Returns the path the kernel associates with the inode, not the pathname
-/// used to open it. Immune to post-open renames/symlink swaps.
-#[cfg(target_os = "macos")]
-fn fd_real_path(file: &std::fs::File) -> Result<std::path::PathBuf, String> {
-    use std::os::unix::io::AsRawFd;
-    let fd = file.as_raw_fd();
-    let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    let ret = unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) };
-    if ret == -1 {
-        return Err(format!(
-            "fcntl F_GETPATH failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    let s = std::str::from_utf8(&buf[..nul]).map_err(|e| e.to_string())?;
-    Ok(std::path::PathBuf::from(s))
-}
-
-#[cfg(target_os = "linux")]
-fn fd_real_path(file: &std::fs::File) -> Result<std::path::PathBuf, String> {
-    use std::os::unix::io::AsRawFd;
-    let fd = file.as_raw_fd();
-    std::fs::read_link(format!("/proc/self/fd/{fd}")).map_err(|e| e.to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn fd_real_path(file: &std::fs::File) -> Result<std::path::PathBuf, String> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED,
-    };
-    let handle = file.as_raw_handle() as *mut core::ffi::c_void;
-    let mut buf = vec![0u16; 1024];
-    let len = unsafe {
-        GetFinalPathNameByHandleW(
-            handle,
-            buf.as_mut_ptr(),
-            buf.len() as u32,
-            FILE_NAME_NORMALIZED,
-        )
-    };
-    if len == 0 {
-        return Err(format!(
-            "GetFinalPathNameByHandleW failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let path_str = String::from_utf16_lossy(&buf[..len as usize]);
-    // Strip \\?\ prefix that Windows adds
-    let cleaned = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
-    Ok(std::path::PathBuf::from(cleaned))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn fd_real_path(_file: &std::fs::File) -> Result<std::path::PathBuf, String> {
-    Err("fd_real_path not supported on this platform".to_string())
 }
 
 /// MIME types blocked from upload — mirrors the server's generic-file deny-list.
@@ -268,6 +208,7 @@ pub(crate) fn sanitize_image_for_upload(body: Vec<u8>, mime: &str) -> Result<Vec
     // re-encode below would destroy. Pull it out first and re-inject it after
     // sanitizing — all other metadata is still stripped, and the relay
     // allowlists exactly this chunk.
+    #[cfg(not(feature = "local-owner-profile"))]
     let snapshot_chunk = if format == image::ImageFormat::Png {
         super::media_snapshot_png::extract_snapshot_text_chunk(&body)
     } else {
@@ -293,10 +234,13 @@ pub(crate) fn sanitize_image_for_upload(body: Vec<u8>, mime: &str) -> Result<Vec
         .write_to(&mut output, format)
         .map_err(|_| "failed to encode image without metadata".to_string())?;
     let sanitized = output.into_inner();
-    match snapshot_chunk {
+    #[cfg(not(feature = "local-owner-profile"))]
+    return match snapshot_chunk {
         Some(chunk) => super::media_snapshot_png::inject_snapshot_text_chunk(sanitized, &chunk),
         None => Ok(sanitized),
-    }
+    };
+    #[cfg(feature = "local-owner-profile")]
+    Ok(sanitized)
 }
 
 pub(crate) fn detect_and_validate_mime(body: &[u8]) -> Result<String, String> {
@@ -455,6 +399,7 @@ async fn send_upload_attempt(
     response.map_err(|error| classify_request_error(&error))
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) async fn upload_image_bytes(
     body: Vec<u8>,
     state: &AppState,
@@ -531,6 +476,7 @@ async fn do_upload(
 /// Trust boundary: only reads files inside `temp_dir()`. Opens the fd first,
 /// then resolves the fd's real path to verify containment (TOCTOU-safe).
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn upload_media(
     file_path: String,
     is_temp: bool,
@@ -598,25 +544,36 @@ async fn process_picked_path(
                 if images_only {
                     return Err("Please choose an image file.".to_string());
                 }
-                // ffmpeg needs a path, not an fd. Resolve the fd's real path
-                // so we pass the actual inode's location, not the original
-                // (potentially swapped) pathname. Same pattern as upload_media.
-                // IMPORTANT: keep `file` alive (fd open) until after transcode
-                // completes — this prevents the inode from being unlinked or
-                // the resolved path from becoming stale during the ffmpeg run.
-                let fd_path = fd_real_path(&file)?;
-                let result = transcode_and_extract_poster(&fd_path);
-                drop(file); // release fd only after ffmpeg is done
-                result
+                #[cfg(feature = "local-owner-profile")]
+                return Err("video transcoding is not part of the local-owner product".to_string());
+                #[cfg(not(feature = "local-owner-profile"))]
+                {
+                    // ffmpeg needs a path, not an fd. Resolve the fd's real path
+                    // so we pass the actual inode's location, not the original
+                    // (potentially swapped) pathname. Same pattern as upload_media.
+                    // IMPORTANT: keep `file` alive (fd open) until after transcode
+                    // completes — this prevents the inode from being unlinked or
+                    // the resolved path from becoming stale during the ffmpeg run.
+                    let fd_path = fd_real_path(&file)?;
+                    let result = transcode_and_extract_poster(&fd_path);
+                    drop(file); // release fd only after ffmpeg is done
+                    result
+                }
             } else if heic_by_ext || is_heic_file(&header[..n]) {
-                // HEIC/HEIF still: Chromium/the webview can't decode it, so
-                // transcode to JPEG before upload (mirrors mobile). Resolve the
-                // fd's real path so ffmpeg reads the pinned inode, and keep
-                // `file` alive until the transcode finishes.
-                let fd_path = fd_real_path(&file)?;
-                let result = transcode_heic_path_to_jpeg_bytes(&fd_path).map(|jpeg| (jpeg, None));
-                drop(file); // release fd only after ffmpeg is done
-                result
+                #[cfg(feature = "local-owner-profile")]
+                return Err("HEIC transcoding is not part of the local-owner product".to_string());
+                #[cfg(not(feature = "local-owner-profile"))]
+                {
+                    // HEIC/HEIF still: Chromium/the webview can't decode it, so
+                    // transcode to JPEG before upload (mirrors mobile). Resolve the
+                    // fd's real path so ffmpeg reads the pinned inode, and keep
+                    // `file` alive until the transcode finishes.
+                    let fd_path = fd_real_path(&file)?;
+                    let result =
+                        transcode_heic_path_to_jpeg_bytes(&fd_path).map(|jpeg| (jpeg, None));
+                    drop(file); // release fd only after ffmpeg is done
+                    result
+                }
             } else {
                 // Image: read the rest from the already-open fd (TOCTOU-safe).
                 let mut bytes = header[..n].to_vec();
@@ -756,6 +713,16 @@ pub async fn upload_media_bytes(
         return Err("empty upload".to_string());
     }
 
+    #[cfg(feature = "local-owner-profile")]
+    let (body, poster_bytes) = {
+        if is_video_file(&data) || is_heic_file(&data) {
+            return Err(
+                "video and HEIC transcoding are not part of the local-owner product".to_string(),
+            );
+        }
+        (data, None)
+    };
+    #[cfg(not(feature = "local-owner-profile"))]
     let (body, poster_bytes) = if is_video_file(&data) {
         // Video: write to temp → transcode + extract poster → read results.
         // All blocking I/O runs off the async runtime via spawn_blocking.

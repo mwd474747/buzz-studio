@@ -21,6 +21,7 @@ import type {
 export function useChannelSections(
   pubkey: string | undefined,
   relayUrl?: string,
+  syncEnabled = true,
 ): {
   sections: ChannelSection[];
   assignments: Record<string, string>;
@@ -54,12 +55,14 @@ export function useChannelSections(
     setStore(readChannelSectionsStore(pubkey, relayUrl));
     lastAppliedRemoteTs.current = 0;
     lastAppliedEventId.current = "";
-    managerRef.current = new ChannelSectionSyncManager(pubkey);
+    managerRef.current = syncEnabled
+      ? new ChannelSectionSyncManager(pubkey)
+      : null;
     return () => {
       managerRef.current?.destroy();
       managerRef.current = null;
     };
-  }, [pubkey, relayUrl]);
+  }, [pubkey, relayUrl, syncEnabled]);
 
   React.useEffect(() => {
     if (!pubkey) {
@@ -102,7 +105,7 @@ export function useChannelSections(
   );
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let cancelled = false;
     void managerRef.current?.fetchRemoteSections().then((remote) => {
       if (cancelled) return;
@@ -118,10 +121,10 @@ export function useChannelSections(
     return () => {
       cancelled = true;
     };
-  }, [pubkey, relayUrl, applyRemote]);
+  }, [pubkey, relayUrl, applyRemote, syncEnabled]);
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let unsub: (() => Promise<void>) | null = null;
     let cancelled = false;
     void managerRef.current
@@ -140,10 +143,10 @@ export function useChannelSections(
       cancelled = true;
       if (unsub) void unsub();
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, applyRemote, syncEnabled]);
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let cancelled = false;
     const unsub = relayClient.subscribeToReconnects(() => {
       void managerRef.current?.fetchRemoteSections().then((remote) => {
@@ -161,7 +164,7 @@ export function useChannelSections(
       cancelled = true;
       unsub();
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, applyRemote, syncEnabled]);
 
   const sections = React.useMemo<ChannelSection[]>(
     () => store.sections.slice().sort((a, b) => a.order - b.order),

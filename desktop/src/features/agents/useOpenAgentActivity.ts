@@ -72,10 +72,11 @@ export function resolveOpenableActivityChannelId({
  * This replaces the old behavior where "View activity log" silently
  * disappeared on routes without an AgentSessionProvider.
  */
-export function useOpenAgentActivity() {
+export function useOpenAgentActivity(options?: { enabled?: boolean }) {
+  const enabled = options?.enabled ?? true;
   const { onOpenAgentSession } = useAgentSession();
   const { goChannel } = useAppNavigation();
-  const relayAgentsQuery = useRelayAgentsQuery();
+  const relayAgentsQuery = useRelayAgentsQuery({ enabled });
   const relayAgents = relayAgentsQuery.data;
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data;
@@ -116,7 +117,7 @@ export function useOpenAgentActivity() {
 
   const canOpenAgentActivity = React.useCallback(
     (pubkey: string | null | undefined): boolean => {
-      if (!pubkey) {
+      if (!enabled || !pubkey) {
         return false;
       }
       if (onOpenAgentSession) {
@@ -132,11 +133,12 @@ export function useOpenAgentActivity() {
       }
       return resolveChannelId(pubkey) !== null;
     },
-    [channels, onOpenAgentSession, resolveChannelId],
+    [channels, enabled, onOpenAgentSession, resolveChannelId],
   );
 
   const openAgentActivity = React.useCallback(
     (pubkey: string, options?: { channelId?: string | null }): boolean => {
+      if (!enabled) return false;
       // An explicit channel target (e.g. clicking a "Working in #channel"
       // badge) navigates so the pane opens scoped to that channel — but only
       // when the viewer can actually open that channel. Scoping the pane to
@@ -171,7 +173,13 @@ export function useOpenAgentActivity() {
       }
       return false;
     },
-    [findOpenableChannel, goChannel, onOpenAgentSession, resolveChannelId],
+    [
+      enabled,
+      findOpenableChannel,
+      goChannel,
+      onOpenAgentSession,
+      resolveChannelId,
+    ],
   );
 
   return { canOpenAgentActivity, openAgentActivity };

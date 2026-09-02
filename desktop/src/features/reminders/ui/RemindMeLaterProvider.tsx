@@ -5,12 +5,14 @@ import type { ReminderTarget } from "@/features/reminders/lib/reminderTypes";
 import { RemindMeLaterDialog } from "./RemindMeLaterDialog";
 
 type RemindMeLaterContextValue = {
+  enabled: boolean;
   openReminder: (target: ReminderTarget) => void;
   /** Event IDs of messages with a pending reminder, for channel tinting. */
   activeReminderEventIds: ReadonlySet<string>;
 };
 
 const RemindMeLaterContext = React.createContext<RemindMeLaterContextValue>({
+  enabled: false,
   openReminder: () => {},
   activeReminderEventIds: new Set(),
 });
@@ -20,6 +22,25 @@ export function useRemindLater() {
 }
 
 export function RemindMeLaterProvider({
+  enabled = true,
+  pubkey,
+  children,
+}: {
+  enabled?: boolean;
+  pubkey?: string;
+  children: React.ReactNode;
+}) {
+  if (!enabled) {
+    return children;
+  }
+  return (
+    <ActiveRemindMeLaterProvider pubkey={pubkey}>
+      {children}
+    </ActiveRemindMeLaterProvider>
+  );
+}
+
+function ActiveRemindMeLaterProvider({
   pubkey,
   children,
 }: {
@@ -50,7 +71,7 @@ export function RemindMeLaterProvider({
   }, [reminders]);
 
   const contextValue = React.useMemo(
-    () => ({ openReminder, activeReminderEventIds }),
+    () => ({ enabled: true, openReminder, activeReminderEventIds }),
     [openReminder, activeReminderEventIds],
   );
 

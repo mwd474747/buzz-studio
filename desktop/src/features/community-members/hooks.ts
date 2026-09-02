@@ -25,16 +25,18 @@ export function useRelayMembersQuery(enabled = true) {
   });
 }
 
-export function useMyRelayMembershipQuery() {
+export function useMyRelayMembershipQuery(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: myRelayMembershipQueryKey,
     queryFn: getMyRelayMembership,
     staleTime: 60_000,
   });
 }
 
-export function useMyRelayMembershipLookupQuery() {
+export function useMyRelayMembershipLookupQuery(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: myRelayMembershipLookupQueryKey,
     queryFn: getMyRelayMembershipLookup,
     staleTime: 60_000,

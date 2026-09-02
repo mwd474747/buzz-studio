@@ -184,7 +184,7 @@ type InboxListPaneProps = {
   onMarkRead: (itemId: string) => void;
   onMarkUnread: (itemId: string) => void;
   onOpenDirect: (item: InboxItem) => void;
-  onRemindLater: (item: InboxItem) => void;
+  onRemindLater?: (item: InboxItem) => void;
   onSelect: (itemId: string) => void;
   onSelectDraft: (draftKey: string) => void;
   onSelectReminder: (reminderId: string) => void;
@@ -194,6 +194,7 @@ type InboxListPaneProps = {
   showRightDivider?: boolean;
   dueReminderCount: number;
   reminderPubkey?: string;
+  remindersEnabled?: boolean;
   reminders: readonly Reminder[];
   selectedReminderId: string | null;
   unreadOnly: boolean;
@@ -222,6 +223,7 @@ export function InboxListPane({
   showRightDivider = false,
   dueReminderCount,
   reminderPubkey,
+  remindersEnabled = true,
   reminders,
   selectedReminderId,
   unreadOnly,
@@ -441,20 +443,22 @@ export function InboxListPane({
           >
             <ExternalLink className="!h-4 !w-4" />
           </InboxRowActionButton>
-          <InboxRowActionButton
-            active={hasActiveReminder}
-            disabled={!hasChannelTarget}
-            label={
-              hasChannelTarget
-                ? hasActiveReminder
-                  ? "Reminder set"
-                  : "Remind me later"
-                : "Cannot remind without a channel"
-            }
-            onClick={() => onRemindLater(item)}
-          >
-            <Clock className="!h-4 !w-4" />
-          </InboxRowActionButton>
+          {onRemindLater ? (
+            <InboxRowActionButton
+              active={hasActiveReminder}
+              disabled={!hasChannelTarget}
+              label={
+                hasChannelTarget
+                  ? hasActiveReminder
+                    ? "Reminder set"
+                    : "Remind me later"
+                  : "Cannot remind without a channel"
+              }
+              onClick={() => onRemindLater(item)}
+            >
+              <Clock className="!h-4 !w-4" />
+            </InboxRowActionButton>
+          ) : null}
         </div>
       </div>
     );
@@ -486,17 +490,19 @@ export function InboxListPane({
             <ExternalLink className="h-4 w-4" />
             {hasChannelTarget ? "Open in channel" : "No channel link"}
           </ContextMenuItem>
-          <ContextMenuItem
-            disabled={!hasChannelTarget}
-            onClick={() => {
-              if (hasChannelTarget) {
-                onRemindLater(item);
-              }
-            }}
-          >
-            <Clock className="h-4 w-4" />
-            {hasActiveReminder ? "Reminder set" : "Remind me later"}
-          </ContextMenuItem>
+          {onRemindLater ? (
+            <ContextMenuItem
+              disabled={!hasChannelTarget}
+              onClick={() => {
+                if (hasChannelTarget) {
+                  onRemindLater(item);
+                }
+              }}
+            >
+              <Clock className="h-4 w-4" />
+              {hasActiveReminder ? "Reminder set" : "Remind me later"}
+            </ContextMenuItem>
+          ) : null}
         </ContextMenuContent>
       </ContextMenu>
     );
@@ -570,6 +576,7 @@ export function InboxListPane({
                 filter={filter}
                 onFilterChange={onFilterChange}
                 reminderCount={reminders.length}
+                remindersEnabled={remindersEnabled}
               />
             </div>
           </div>

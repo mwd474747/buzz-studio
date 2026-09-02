@@ -5,21 +5,28 @@ import { importIdentity } from "@/shared/api/tauriIdentity";
 import { useSystemColorScheme } from "@/shared/theme/useSystemColorScheme";
 import { Button } from "@/shared/ui/button";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
+import { useLocalOwnerPolicy } from "../useLocalOwnerPolicy";
 import { NostrKeyImportForm } from "./NostrKeyImportForm";
 
 export function KeyringLockedScreen() {
   const queryClient = useQueryClient();
   const systemColorScheme = useSystemColorScheme();
   const [showImport, setShowImport] = React.useState(false);
+  const localOwnerPolicy = useLocalOwnerPolicy();
 
   const handleReimportClick = React.useCallback(() => {
+    if (localOwnerPolicy === "active") {
+      setShowImport(true);
+      return;
+    }
+    if (localOwnerPolicy !== "inactive") return;
     const confirmed = window.confirm(
       "Importing a different nsec replaces the identity currently locked in the keyring for this install. The previous identity will no longer be accessible. Continue?",
     );
     if (confirmed) {
       setShowImport(true);
     }
-  }, []);
+  }, [localOwnerPolicy]);
 
   const handleImport = React.useCallback(
     async (nsec: string, password?: string) => {
@@ -48,6 +55,18 @@ export function KeyringLockedScreen() {
           session. Unlock your keyring or sign into your desktop session, then
           relaunch Buzz.
         </p>
+        {localOwnerPolicy === "active" ? (
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            This installation is pinned to its existing owner identity. Only
+            re-import the matching owner key; replacement identities are
+            disabled.
+          </p>
+        ) : localOwnerPolicy === "unavailable" ? (
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            Buzz could not confirm this installation's identity policy. Only
+            relaunch is available until that policy can be verified.
+          </p>
+        ) : null}
 
         {showImport ? (
           <NostrKeyImportForm
@@ -69,11 +88,21 @@ export function KeyringLockedScreen() {
             </Button>
             <Button
               className="h-10 w-full"
+              disabled={
+                localOwnerPolicy === "loading" ||
+                localOwnerPolicy === "unavailable"
+              }
               onClick={handleReimportClick}
               type="button"
               variant="secondary"
             >
-              Re-import your key instead
+              {localOwnerPolicy === "loading"
+                ? "Checking identity policy…"
+                : localOwnerPolicy === "unavailable"
+                  ? "Identity policy unavailable"
+                  : localOwnerPolicy === "active"
+                    ? "Re-import the owner key"
+                    : "Re-import your key instead"}
             </Button>
           </div>
         )}

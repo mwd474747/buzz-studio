@@ -85,6 +85,7 @@ export function ProfileAvatarEditor({
   modeTabsContainer,
   onAnimatedPreviewActiveChange,
   onAnimatedPreviewCaptionChange,
+  animatedModeEnabled = true,
   presentation = "default",
 }: ProfileAvatarEditorProps) {
   const { burstEmoji } = useEmojiBurst();
@@ -495,6 +496,7 @@ export function ProfileAvatarEditor({
       onModeChange={updateMode}
       portalContainer={modeTabsContainer}
       presentation={presentation}
+      animatedModeEnabled={animatedModeEnabled}
     />
   );
 
