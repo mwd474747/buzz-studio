@@ -297,7 +297,9 @@ export CARGO_HOME="$build_root/cargo-home"
 export CARGO_TARGET_DIR="$build_root/target"
 
 hermit_exec() {
-  "$verified_hermit" --level=fatal exec "$build_repo_root" -- "$@"
+  local tool=${1:?Hermit tool name is required}
+  shift
+  "$verified_hermit" --level=fatal exec "$build_repo_root/bin/$tool" -- "$@"
 }
 
 if ! /usr/bin/plutil -lint "$entitlements_path" >/dev/null; then
