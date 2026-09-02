@@ -1,5 +1,4 @@
 use super::*;
-
 fn assert_key_eq(a: &Keys, b: &Keys) {
     assert_eq!(a.public_key().to_hex(), b.public_key().to_hex());
 }
@@ -160,10 +159,7 @@ use std::collections::HashMap;
 
 use crate::secret_store::KeyringProbe;
 
-/// In-memory [`IdentityKeyStore`] for testing identity recovery without the
-/// OS keyring. Seeded with an initial value and a probe outcome; records
-/// every `delete`/`store` so tests can assert the keyring was cleared and
-/// rewritten. `write_and_verify` succeeds (store then load reflects it).
+/// In-memory key store for recovery tests without the OS keyring.
 struct FakeIdentityStore {
     probe: KeyringProbe,
     slot: RefCell<HashMap<String, String>>,
@@ -171,10 +167,7 @@ struct FakeIdentityStore {
     /// When true, `store` returns an availability error, driving the
     /// keyring-write-failure → file-fallback arm of `store_key_preferring_keyring`.
     store_fails: bool,
-    /// When `Some`, `load()` always returns this value regardless of what was
-    /// stored. Used to simulate read-back corruption: `store()` succeeds but
-    /// the subsequent `load()` returns a different value, causing
-    /// `persist_identity_to_keyring`'s read-back verify to fail.
+    /// Simulates read-back corruption after a successful store.
     load_override: Option<String>,
     /// When true, `verify_stored()` always returns `Ok(false)` — simulates
     /// a backend that stores successfully but cannot be read back (e.g. an OS
@@ -290,6 +283,12 @@ impl IdentityKeyStore for FakeIdentityStore {
             return Ok(Some(v.clone()));
         }
         Ok(self.slot.borrow().get(name).cloned())
+    }
+    fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String> {
+        if self.probe == KeyringProbe::Unreachable {
+            return Err("simulated keyring unavailable".to_string());
+        }
+        Ok(Some(self.slot.borrow().clone()))
     }
     fn store(&self, name: &str, value: &str) -> Result<(), String> {
         if self.store_fails {
@@ -1415,3 +1414,4 @@ fn corrupt_keyring_no_marker_no_file_generates_fresh() {
         "a fresh key must be stored in the keyring or the file after generate_and_persist"
     );
 }
+include!("app_state_local_owner_tests.rs");

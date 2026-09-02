@@ -7,6 +7,7 @@ type RawIdentity = {
   storage?: IdentityStorage;
   lost?: boolean;
   locked?: boolean;
+  relaunch_required?: boolean;
   reset_failed?: boolean;
 };
 
@@ -17,6 +18,7 @@ function fromRawIdentity(raw: RawIdentity): Identity {
     storage: raw.storage,
     lost: raw.lost === true,
     locked: raw.locked === true,
+    relaunchRequired: raw.relaunch_required === true,
     resetFailed: raw.reset_failed === true,
   };
 }

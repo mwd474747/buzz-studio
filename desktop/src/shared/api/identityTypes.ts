@@ -21,6 +21,10 @@ export type Identity = {
    * the user must unlock the keyring externally and relaunch.
    * Mutually exclusive with `lost`. */
   locked?: boolean;
+  /** True after recovery restored the durable owner key, while the native
+   * process remains locked down until a full relaunch. Unlike component-local
+   * recovery state, this survives a webview reload. */
+  relaunchRequired?: boolean;
   /** True when the boot-time Phase 2 reset attempted a wipe but verification
    * failed. Identity resolution was skipped; the sentinel is preserved so
    * the next relaunch retries the wipe automatically. */

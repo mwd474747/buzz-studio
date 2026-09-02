@@ -58,8 +58,8 @@ type UseUnreadChannelsOptions = UseLiveChannelUpdatesOptions & {
   relayClient?: RelayClient;
   relayUrl?: string;
   mutedChannelIds?: ReadonlySet<string>;
+  readStateSyncEnabled?: boolean;
 };
-
 // Per-channel cap on the catch-up REQ. We only consume the *max matching*
 // event per channel, but the relay can return self-authored / non-trigger
 // events that we discard client-side, so we need enough head-room for the
@@ -143,6 +143,7 @@ export function useUnreadChannels(
     relayClient,
     relayUrl: relayUrlOption,
     mutedChannelIds: mutedChannelIdsOption,
+    readStateSyncEnabled = true,
     ...liveUpdateOptions
   } = options;
   const activeChannelId = activeChannel?.id ?? null;
@@ -169,8 +170,7 @@ export function useUnreadChannels(
     setContextParentResolver,
     readStateVersion,
     getOwnTimestamp,
-  } = useReadState(pubkey, relayClient);
-
+  } = useReadState(pubkey, relayClient, readStateSyncEnabled);
   // Observed "latest external trigger event" per channel (unix seconds). This
   // is *derived relay evidence*, not source-of-truth: it's populated from a
   // one-shot catch-up REQ per channel (keyed on the NIP-RS read marker) plus

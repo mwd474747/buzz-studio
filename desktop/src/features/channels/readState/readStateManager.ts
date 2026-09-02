@@ -320,10 +320,12 @@ export class ReadStateManager {
   private pendingSyncedAdvances = new Set<string>();
   private destroyed = false;
   private parentResolver: ContextParentResolver | null = null;
+  private syncEnabled: boolean;
 
-  constructor(pubkey: string, relayClient: RelayClient) {
+  constructor(pubkey: string, relayClient: RelayClient, syncEnabled = true) {
     this.pubkey = pubkey;
     this.relayClient = relayClient;
+    this.syncEnabled = syncEnabled;
     this.clientId = getOrCreatePersisted(clientIdKey(pubkey), () =>
       crypto.randomUUID(),
     );
@@ -340,6 +342,12 @@ export class ReadStateManager {
     );
 
     this.hydrateFromLocalStorage();
+
+    if (!this.syncEnabled) {
+      this.initialized = true;
+      this.notifyListeners();
+      return;
+    }
 
     await this.fetchAndMerge();
     if (this.destroyed) return;
@@ -622,6 +630,7 @@ export class ReadStateManager {
   }
 
   private schedulePublish(): void {
+    if (!this.syncEnabled) return;
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
     }

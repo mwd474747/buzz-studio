@@ -58,6 +58,7 @@ import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import { resolveUserLabel } from "@/features/profile/lib/identity";
 import { useRemindLater } from "@/features/reminders/ui/RemindMeLaterProvider";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { deleteMessage, sendChannelMessage } from "@/shared/api/tauri";
 import type { HomeFeedResponse } from "@/shared/api/types";
 import { KIND_REACTION } from "@/shared/constants/kinds";
@@ -101,6 +102,8 @@ export function HomeView({
   onOpenContext,
   onRefresh,
 }: HomeViewProps) {
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const legacySurfacesEnabled = localOwnerPolicy === "inactive";
   const relaySelfPubkey = useRelaySelfQuery().data;
   const [homeInboxRef, homeInboxWidthPx] = useElementWidth<HTMLDivElement>();
   const isNarrowHomeViewport =
@@ -114,7 +117,7 @@ export function HomeView({
   // background data loads must never trigger navigations.
   const { applyPatch: applyInboxSearchPatch, values: inboxSearchValues } =
     useHistorySearchState(INBOX_SEARCH_KEYS);
-  const isReminders = filter === "reminders";
+  const isReminders = legacySurfacesEnabled && filter === "reminders";
   const isDrafts = filter === "drafts";
   const isMessagesMode = !isReminders && !isDrafts;
   const allowMixedPersonalSelection = filter === "all";
@@ -136,7 +139,7 @@ export function HomeView({
     },
   } = useHomePersonalInbox({
     allowMixedSelection: allowMixedPersonalSelection,
-    currentPubkey,
+    currentPubkey: legacySurfacesEnabled ? currentPubkey : undefined,
     isDrafts,
     isNarrowHomeViewport,
     isReminders,
@@ -217,7 +220,12 @@ export function HomeView({
     },
     [goChannel, openDmMutation],
   );
-  const { activeReminderEventIds, openReminder } = useRemindLater();
+  const {
+    activeReminderEventIds,
+    enabled: reminderContextEnabled,
+    openReminder,
+  } = useRemindLater();
+  const remindersEnabled = legacySurfacesEnabled && reminderContextEnabled;
   const [localRepliesByItemId, setLocalRepliesByItemId] = React.useState<
     Record<string, InboxReply[]>
   >({});
@@ -279,7 +287,8 @@ export function HomeView({
     if (!managedChannelId || !channels) return null;
     return channels.find((channel) => channel.id === managedChannelId) ?? null;
   }, [channels, managedChannelId]);
-  const isChannelManagementOpen = managedChannel !== null;
+  const isChannelManagementOpen =
+    legacySurfacesEnabled && managedChannel !== null;
   const hasAuxiliaryPane =
     isChannelManagementOpen || profilePanelPubkey !== null;
   const isSinglePanelAuxiliaryView =
@@ -322,7 +331,7 @@ export function HomeView({
   });
   const feedProfiles = feedProfilesQuery.data?.profiles;
   const ownedAgentPubkeys = useOwnedAgentPubkeys(
-    true,
+    legacySurfacesEnabled,
     feedProfiles,
     currentPubkey,
   );
@@ -342,6 +351,7 @@ export function HomeView({
   const feedOwnerProfiles = feedOwnerProfilesQuery.data?.profiles;
   const communityAgentPubkeys = useKnownAgentPubkeys();
   const inboxAgentPubkeys = React.useMemo(() => {
+    if (!legacySurfacesEnabled) return new Set<string>();
     const pubkeys = new Set(communityAgentPubkeys);
 
     for (const [pubkey, profile] of Object.entries(feedProfiles ?? {})) {
@@ -351,7 +361,7 @@ export function HomeView({
     }
 
     return pubkeys;
-  }, [feedProfiles, communityAgentPubkeys]);
+  }, [communityAgentPubkeys, feedProfiles, legacySurfacesEnabled]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion invalidates the stable getChannelReadAt callback
   const inboxItems = React.useMemo(() => {
     const items = buildInboxItems({
@@ -635,7 +645,9 @@ export function HomeView({
 
           {showListPane ? (
             <InboxListPane
-              activeReminderEventIds={activeReminderEventIds}
+              activeReminderEventIds={
+                remindersEnabled ? activeReminderEventIds : undefined
+              }
               agentPubkeys={inboxAgentPubkeys}
               activeDraftCount={activeDraftCount}
               draftItems={draftItems}
@@ -658,18 +670,22 @@ export function HomeView({
                   getThreadReference(item.item.tags).rootId,
                 );
               }}
-              onRemindLater={(item) => {
-                const channelId = item.item.channelId;
-                if (!channelId) {
-                  return;
-                }
-                openReminder({
-                  authorPubkey: item.item.pubkey,
-                  channelId,
-                  eventId: item.id,
-                  preview: item.preview.slice(0, 100),
-                });
-              }}
+              onRemindLater={
+                remindersEnabled
+                  ? (item) => {
+                      const channelId = item.item.channelId;
+                      if (!channelId) {
+                        return;
+                      }
+                      openReminder({
+                        authorPubkey: item.item.pubkey,
+                        channelId,
+                        eventId: item.id,
+                        preview: item.preview.slice(0, 100),
+                      });
+                    }
+                  : undefined
+              }
               onSelect={(itemId) => {
                 const item = findInboxItemByEventId(inboxItems, itemId);
                 setUnreadBoundary(
@@ -698,7 +714,8 @@ export function HomeView({
                 setSelectedReminderId(reminderId);
               }}
               onUnreadOnlyChange={setUnreadOnly}
-              reminderPubkey={currentPubkey}
+              reminderPubkey={remindersEnabled ? currentPubkey : undefined}
+              remindersEnabled={remindersEnabled}
               reminders={pendingReminders}
               selectedConversationId={selectedConversationId}
               selectedDraftKey={selectedDraftKey}
@@ -734,7 +751,7 @@ export function HomeView({
           {showDetailPane && detailMode === "messages" ? (
             <InboxDetailPane
               agentPubkeys={inboxAgentPubkeys}
-              canDelete={canDelete}
+              canDelete={legacySurfacesEnabled && canDelete}
               canOpenChannel={Boolean(
                 selectedItem?.item.channelId &&
                   availableChannelIds.has(selectedItem.item.channelId),
@@ -781,6 +798,9 @@ export function HomeView({
                   });
               }}
               onManageChannel={(channelId) => {
+                if (!legacySurfacesEnabled) {
+                  return;
+                }
                 handleCloseProfilePanel();
                 setManagedChannelId(channelId);
               }}

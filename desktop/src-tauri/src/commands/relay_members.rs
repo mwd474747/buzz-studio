@@ -3,12 +3,14 @@ use tauri::State;
 
 use crate::{
     app_state::AppState,
-    events, nostr_convert,
+    nostr_convert,
     relay::{
         classify_request_error, parse_json_response, query_relay, relay_api_base_url_with_override,
-        relay_error_message, submit_event,
+        relay_error_message,
     },
 };
+#[cfg(not(feature = "local-owner-profile"))]
+use crate::{events, relay::submit_event};
 
 #[derive(Deserialize)]
 struct RelayInformationDocument {
@@ -36,6 +38,7 @@ pub async fn relay_requires_membership(state: State<'_, AppState>) -> Result<boo
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn list_relay_members(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     // kind:13534 is a single replaceable event on the relay carrying all members.
     let events = query_relay(
@@ -89,6 +92,7 @@ pub async fn get_my_relay_membership(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn add_relay_member(
     target_pubkey: String,
     role: String,
@@ -100,6 +104,7 @@ pub async fn add_relay_member(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn remove_relay_member(
     target_pubkey: String,
     state: State<'_, AppState>,
@@ -110,6 +115,7 @@ pub async fn remove_relay_member(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn change_relay_member_role(
     target_pubkey: String,
     new_role: String,

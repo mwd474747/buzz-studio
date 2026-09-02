@@ -1,10 +1,10 @@
-// biome-ignore format: keep compact to stay within file size limit
 import * as React from "react";
 import { FeatureGate } from "@/shared/features";
 import { SidebarDndContext } from "@/features/sidebar/ui/SidebarDnd";
 
 import type { Community } from "@/features/communities/types";
 import { AddCommunityDialog } from "@/features/communities/ui/AddCommunityDialog";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import type { AddCommunityPrefillRequest } from "@/features/communities/addCommunityPrefill";
 import { useIsMobile } from "@/shared/hooks/use-mobile";
 import { useDeferredLoad } from "@/shared/hooks/useDeferredStartup";
@@ -12,7 +12,10 @@ import {
   useChannelSections,
   type ChannelSection,
 } from "@/features/sidebar/lib/useChannelSections";
-import { useActiveWorkingChannelsById } from "@/features/sidebar/lib/useActiveWorkingChannelsById";
+import { resolveActiveWorkingChannelNames } from "@/features/sidebar/lib/useActiveWorkingChannelsById";
+import { useManagedAgentsQuery } from "@/features/agents/hooks";
+import { useWorkingChannels } from "@/features/agents/agentWorkingSignal";
+import type { ActiveChannelTurnSummary } from "@/features/agents/activeAgentTurnsStore";
 import { useDmSidebarMetadata } from "@/features/sidebar/useDmSidebarMetadata";
 import { sortDmChannelsForSidebar } from "@/features/sidebar/lib/dmSidebarSort";
 import {
@@ -81,6 +84,7 @@ type CollapsibleSidebarGroup =
   | "directMessages";
 
 type CreateChannelKind = "stream" | "forum";
+const NO_ACTIVE_WORKING_CHANNELS = new Map<string, ActiveChannelTurnSummary>();
 
 type AppSidebarProps = {
   addCommunityPrefill?: AddCommunityPrefillRequest | null;
@@ -141,6 +145,8 @@ type AppSidebarProps = {
     updates: Partial<Pick<Community, "name" | "relayUrl" | "token">>,
   ) => void;
   onRemoveCommunity: (id: string) => void;
+  communityControlsEnabled?: boolean;
+  legacySurfacesEnabled?: boolean;
   onCreateAgent: () => void;
   onSelectAgents: () => void;
   onSelectProjects: () => void;
@@ -149,11 +155,6 @@ type AppSidebarProps = {
   onSelectHome: () => void;
   onSelectChannel: (channelId: string) => void;
   onOpenSearchResult: (hit: SearchHit) => void;
-  /**
-   * Full channel set used for global search. Unlike `channels` (which is
-   * scoped to the viewer's joined sidebar list), this includes open channels
-   * the viewer hasn't joined, so search can surface them.
-   */
   searchChannels: Channel[];
   searchFocusRequest: number;
   onSelectSettings: (section?: SettingsSection) => void;
@@ -210,6 +211,8 @@ export function AppSidebar({
   onOpenDm,
   onUpdateCommunity,
   onRemoveCommunity,
+  communityControlsEnabled = true,
+  legacySurfacesEnabled = true,
   onCreateAgent,
   onSelectAgents,
   onSelectProjects,
@@ -237,7 +240,26 @@ export function AppSidebar({
   onStarChannel,
   onUnstarChannel,
 }: AppSidebarProps) {
-  const activeWorkingByChannelId = useActiveWorkingChannelsById();
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const preferenceSyncEnabled = localOwnerPolicy === "inactive";
+  const agentSurfacesEnabled = preferenceSyncEnabled && legacySurfacesEnabled;
+  const managedAgentsQuery = useManagedAgentsQuery({
+    enabled: agentSurfacesEnabled,
+  });
+  const activeWorkingChannels = useWorkingChannels();
+  const activeWorkingByChannelId = React.useMemo(() => {
+    if (!agentSurfacesEnabled) return NO_ACTIVE_WORKING_CHANNELS;
+    const managedAgents = managedAgentsQuery.data ?? [];
+    return new Map(
+      activeWorkingChannels.map((summary) => {
+        const resolved = resolveActiveWorkingChannelNames(
+          summary,
+          managedAgents,
+        );
+        return [resolved.channelId, resolved];
+      }),
+    );
+  }, [activeWorkingChannels, agentSurfacesEnabled, managedAgentsQuery.data]);
   const { status: updateStatus } = useUpdaterContext();
   const canShowSidebarUpdateCard = shouldShowSidebarUpdateCard(updateStatus);
   const { open: sidebarOpen, openMobile } = useSidebar();
@@ -305,11 +327,6 @@ export function AppSidebar({
     }
   }, [canShowSidebarUpdateCard]);
 
-  // Allow the create-channel dialog to be opened from outside (e.g. the
-  // ⌘⇧N global shortcut in AppShell), mirroring the controlled new-DM lift.
-  // When the external flag flips on, open the "stream" create dialog; the
-  // close direction is reported back via `onCreateChannelOpenChange` in the
-  // dialog's `onOpenChange` below.
   React.useEffect(() => {
     if (isCreateChannelOpenProp) {
       openCreateDialog("stream");
@@ -355,7 +372,11 @@ export function AppSidebar({
     reorderSections,
     assignChannel,
     unassignChannel,
-  } = useChannelSections(currentPubkey, activeCommunity?.relayUrl);
+  } = useChannelSections(
+    currentPubkey,
+    activeCommunity?.relayUrl,
+    preferenceSyncEnabled,
+  );
 
   const sectionIds = React.useMemo(
     () => channelSections.map((s) => s.id),
@@ -366,6 +387,7 @@ export function AppSidebar({
     currentPubkey,
     activeCommunity?.relayUrl,
     sectionIds,
+    preferenceSyncEnabled,
   );
 
   const [createSectionState, setCreateSectionState] = React.useState<{
@@ -405,8 +427,6 @@ export function AppSidebar({
         unassigned.push(channel);
       }
     }
-    // Apply each grouping's own sort preference; section membership itself
-    // is untouched.
     for (const sectionId of Object.keys(bySection)) {
       bySection[sectionId] = sortChannelsForSidebar(
         bySection[sectionId],
@@ -549,6 +569,28 @@ export function AppSidebar({
     [assignChannel, onBrowseChannels],
   );
 
+  const sharedChannelListProps = {
+    activeWorkingByChannelId,
+    isActiveChannel: selectedView === "channel",
+    mutedChannelIds,
+    onDeleteChannel: communityControlsEnabled
+      ? requestDeleteChannel
+      : undefined,
+    onMarkChannelRead,
+    onMarkChannelUnread,
+    onMuteChannel,
+    onSelectChannel,
+    onUnmuteChannel,
+    selectedChannelId,
+    unreadChannelCounts,
+    unreadChannelIds,
+  };
+  const streamChannelActions = {
+    onLeaveChannel: communityControlsEnabled ? requestLeaveChannel : undefined,
+    onStarChannel,
+    onUnstarChannel,
+    starredChannelIds,
+  };
   return (
     <Sidebar
       className="!border-r-0"
@@ -571,9 +613,13 @@ export function AppSidebar({
         <AppSidebarPinnedHeader
           channelLabels={dmChannelLabels}
           currentPubkey={currentPubkey}
-          onBrowseChannels={onBrowseChannels}
-          onCreateAgent={onCreateAgent}
-          onCreateChannel={handleOpenCreateChannel}
+          onBrowseChannels={
+            communityControlsEnabled ? onBrowseChannels : undefined
+          }
+          onCreateAgent={legacySurfacesEnabled ? onCreateAgent : undefined}
+          onCreateChannel={
+            communityControlsEnabled ? handleOpenCreateChannel : undefined
+          }
           onOpenDm={onOpenDm}
           onOpenSearchResult={onOpenSearchResult}
           onSelectChannel={onSelectChannel}
@@ -581,7 +627,6 @@ export function AppSidebar({
           searchFocusRequest={searchFocusRequest}
           suggestionChannels={channels}
         />
-
         <div
           className="relative flex min-h-0 flex-1 flex-col"
           data-sidebar-background
@@ -608,6 +653,7 @@ export function AppSidebar({
             >
               <AppSidebarPrimaryMenu
                 homeBadgeCount={homeBadgeCount}
+                legacySurfacesEnabled={legacySurfacesEnabled}
                 onSelectAgents={onSelectAgents}
                 onSelectHome={onSelectHome}
                 onSelectProjects={onSelectProjects}
@@ -624,12 +670,12 @@ export function AppSidebar({
                 <>
                   {starredChannels.length > 0 ? (
                     <ChannelGroupSection
+                      {...sharedChannelListProps}
+                      {...streamChannelActions}
                       hasUnread={starredChannels.some((c) =>
                         unreadChannelIds.has(c.id),
                       )}
                       isCollapsed={collapsedGroups.starred}
-                      isActiveChannel={selectedView === "channel"}
-                      activeWorkingByChannelId={activeWorkingByChannelId}
                       items={starredChannels}
                       sortMode={sortModeFor("starred")}
                       onSortModeChange={(mode) =>
@@ -642,22 +688,8 @@ export function AppSidebar({
                           onMarkChannelRead(channel.id, channel.lastMessageAt);
                         }
                       }}
-                      onMarkChannelRead={onMarkChannelRead}
-                      onMarkChannelUnread={onMarkChannelUnread}
-                      onSelectChannel={onSelectChannel}
                       onToggleCollapsed={() => toggleCollapsedGroup("starred")}
-                      selectedChannelId={selectedChannelId}
                       title="Starred"
-                      unreadChannelCounts={unreadChannelCounts}
-                      unreadChannelIds={unreadChannelIds}
-                      mutedChannelIds={mutedChannelIds}
-                      onMuteChannel={onMuteChannel}
-                      onUnmuteChannel={onUnmuteChannel}
-                      starredChannelIds={starredChannelIds}
-                      onStarChannel={onStarChannel}
-                      onUnstarChannel={onUnstarChannel}
-                      onDeleteChannel={requestDeleteChannel}
-                      onLeaveChannel={requestLeaveChannel}
                     />
                   ) : null}
                   <SidebarDndContext
@@ -670,6 +702,8 @@ export function AppSidebar({
                   >
                     {channelSections.map((section, idx) => (
                       <CustomChannelSection
+                        {...sharedChannelListProps}
+                        {...streamChannelActions}
                         key={section.id}
                         section={section}
                         channels={sectionBuckets.bySection[section.id] ?? []}
@@ -679,11 +713,6 @@ export function AppSidebar({
                           ) ?? false
                         }
                         isCollapsed={collapsedSections[section.id] ?? false}
-                        isActiveChannel={selectedView === "channel"}
-                        activeWorkingByChannelId={activeWorkingByChannelId}
-                        selectedChannelId={selectedChannelId}
-                        unreadChannelCounts={unreadChannelCounts}
-                        unreadChannelIds={unreadChannelIds}
                         sections={channelSections}
                         assignments={channelAssignments}
                         isFirst={idx === 0}
@@ -695,9 +724,6 @@ export function AppSidebar({
                         onToggleCollapsed={() =>
                           toggleCollapsedSection(section.id)
                         }
-                        onSelectChannel={onSelectChannel}
-                        onMarkChannelRead={onMarkChannelRead}
-                        onMarkChannelUnread={onMarkChannelUnread}
                         onMarkSectionRead={() => {
                           for (const channel of sectionBuckets.bySection[
                             section.id
@@ -713,29 +739,23 @@ export function AppSidebar({
                         onCreateSectionForChannel={
                           handleCreateSectionForChannel
                         }
-                        onCreateChannel={() =>
-                          handleCreateChannelInSection(section.id)
+                        onCreateChannel={
+                          communityControlsEnabled
+                            ? () => handleCreateChannelInSection(section.id)
+                            : undefined
                         }
                         onRenameSection={() => setRenameSectionTarget(section)}
                         onDeleteSection={() => setDeleteSectionTarget(section)}
                         onMoveSectionUp={() => moveSectionUp(section.id)}
                         onMoveSectionDown={() => moveSectionDown(section.id)}
-                        mutedChannelIds={mutedChannelIds}
-                        onMuteChannel={onMuteChannel}
-                        onUnmuteChannel={onUnmuteChannel}
-                        starredChannelIds={starredChannelIds}
-                        onStarChannel={onStarChannel}
-                        onUnstarChannel={onUnstarChannel}
-                        onDeleteChannel={requestDeleteChannel}
-                        onLeaveChannel={requestLeaveChannel}
                       />
                     ))}
                     <ChannelGroupSection
+                      {...sharedChannelListProps}
+                      {...streamChannelActions}
                       draggable
                       hasUnread={unreadChannelIds.size > 0}
                       isCollapsed={collapsedGroups.channels}
-                      isActiveChannel={selectedView === "channel"}
-                      activeWorkingByChannelId={activeWorkingByChannelId}
                       items={sectionBuckets.unassigned}
                       sortMode={sortModeFor("channels")}
                       onSortModeChange={(mode) =>
@@ -744,39 +764,28 @@ export function AppSidebar({
                       actionsTestId="section-actions-channels"
                       listTestId="stream-list"
                       quickCreateLabel="Browse channels"
-                      onQuickCreateClick={() => onBrowseChannels?.()}
-                      showQuickCreate
+                      onQuickCreateClick={
+                        communityControlsEnabled
+                          ? () => onBrowseChannels?.()
+                          : undefined
+                      }
+                      showQuickCreate={communityControlsEnabled}
                       onMarkAllRead={onMarkAllChannelsRead}
-                      onMarkChannelRead={onMarkChannelRead}
-                      onMarkChannelUnread={onMarkChannelUnread}
-                      onSelectChannel={onSelectChannel}
                       onToggleCollapsed={() => toggleCollapsedGroup("channels")}
-                      selectedChannelId={selectedChannelId}
                       title="Channels"
-                      unreadChannelCounts={unreadChannelCounts}
-                      unreadChannelIds={unreadChannelIds}
                       sections={channelSections}
                       assignments={channelAssignments}
                       onAssignChannel={assignChannel}
                       onUnassignChannel={unassignChannel}
                       onCreateSectionForChannel={handleCreateSectionForChannel}
-                      mutedChannelIds={mutedChannelIds}
-                      onMuteChannel={onMuteChannel}
-                      onUnmuteChannel={onUnmuteChannel}
-                      starredChannelIds={starredChannelIds}
-                      onStarChannel={onStarChannel}
-                      onUnstarChannel={onUnstarChannel}
-                      onDeleteChannel={requestDeleteChannel}
-                      onLeaveChannel={requestLeaveChannel}
                     />
                   </SidebarDndContext>
                   <FeatureGate feature="forum">
                     <ChannelGroupSection
+                      {...sharedChannelListProps}
                       createLabel="New forum"
                       hasUnread={unreadChannelIds.size > 0}
                       isCollapsed={collapsedGroups.forums}
-                      isActiveChannel={selectedView === "channel"}
-                      activeWorkingByChannelId={activeWorkingByChannelId}
                       items={forumChannels}
                       sortMode={sortModeFor("forums")}
                       onSortModeChange={(mode) =>
@@ -784,20 +793,14 @@ export function AppSidebar({
                       }
                       actionsTestId="section-actions-forums"
                       listTestId="forum-list"
-                      onCreateClick={() => openCreateDialog("forum")}
+                      onCreateClick={
+                        communityControlsEnabled
+                          ? () => openCreateDialog("forum")
+                          : undefined
+                      }
                       onMarkAllRead={onMarkAllChannelsRead}
-                      onMarkChannelRead={onMarkChannelRead}
-                      onMarkChannelUnread={onMarkChannelUnread}
-                      onSelectChannel={onSelectChannel}
                       onToggleCollapsed={() => toggleCollapsedGroup("forums")}
-                      selectedChannelId={selectedChannelId}
                       title="Forums"
-                      unreadChannelCounts={unreadChannelCounts}
-                      unreadChannelIds={unreadChannelIds}
-                      mutedChannelIds={mutedChannelIds}
-                      onMuteChannel={onMuteChannel}
-                      onUnmuteChannel={onUnmuteChannel}
-                      onDeleteChannel={requestDeleteChannel}
                     />
                   </FeatureGate>
                   <SidebarSection
@@ -892,6 +895,7 @@ export function AppSidebar({
               <SidebarMenuItem>
                 <SidebarProfileCard
                   activeCommunity={activeCommunity}
+                  communityControlsEnabled={communityControlsEnabled}
                   isPresencePending={isPresencePending}
                   onOpenAddCommunity={onOpenAddCommunity}
                   onOpenSettings={onSelectSettings}
@@ -914,28 +918,30 @@ export function AppSidebar({
         </div>
       </div>
 
-      <CreateChannelDialog
-        channelKind={createDialogKind}
-        isCreating={isCreatingAny}
-        onOpenChange={(open) => {
-          if (!open) {
-            // If a "stream" dialog driven by the external controller is
-            // closing, report it back so AppShell's open state resets.
-            if (createDialogKind === "stream") {
-              onCreateChannelOpenChange?.(false);
+      {communityControlsEnabled ? (
+        <CreateChannelDialog
+          channelKind={createDialogKind}
+          isCreating={isCreatingAny}
+          onOpenChange={(open) => {
+            if (!open) {
+              if (createDialogKind === "stream") {
+                onCreateChannelOpenChange?.(false);
+              }
+              setCreateDialogKind(null);
             }
-            setCreateDialogKind(null);
-          }
-        }}
-        onCreate={handleCreateFromDialog}
-      />
+          }}
+          onCreate={handleCreateFromDialog}
+        />
+      ) : null}
 
-      <AddCommunityDialog
-        prefill={addCommunityPrefill}
-        onOpenChange={onAddCommunityOpenChange ?? (() => {})}
-        onSubmit={onAddCommunity}
-        open={isAddCommunityOpen ?? false}
-      />
+      {communityControlsEnabled ? (
+        <AddCommunityDialog
+          prefill={addCommunityPrefill}
+          onOpenChange={onAddCommunityOpenChange ?? (() => {})}
+          onSubmit={onAddCommunity}
+          open={isAddCommunityOpen ?? false}
+        />
+      ) : null}
 
       <CreateSectionDialog
         open={createSectionState.open}

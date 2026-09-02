@@ -1,17 +1,21 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
+use nostr::JsonUtil;
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, plugin::TauriPlugin, Manager, Runtime};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::{
-    connect_async,
-    tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message},
+    connect_async_with_config,
+    tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message, WebSocketConfig},
 };
 use tokio_util::sync::CancellationToken;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_LOCAL_OWNER_CONNECTIONS: usize = 4;
+const MAX_LOCAL_OWNER_TEXT_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_WEBSOCKET_CONTROL_PAYLOAD_BYTES: usize = 125;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 const SEND_QUEUE_CAPACITY: usize = 64;
 
@@ -79,12 +83,14 @@ struct ConnectionHandle {
     sender: mpsc::Sender<SendRequest>,
     cancel: CancellationToken,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    _local_owner_slot: Option<OwnedSemaphorePermit>,
 }
 
 #[derive(Clone)]
 pub(crate) struct WebSocketManager {
     connections: Arc<Mutex<HashMap<Id, Arc<ConnectionHandle>>>>,
     connect_cancel: Arc<Mutex<CancellationToken>>,
+    local_owner_slots: Arc<Semaphore>,
 }
 
 impl Default for WebSocketManager {
@@ -92,6 +98,7 @@ impl Default for WebSocketManager {
         Self {
             connections: Arc::default(),
             connect_cancel: Arc::new(Mutex::new(CancellationToken::new())),
+            local_owner_slots: Arc::new(Semaphore::new(MAX_LOCAL_OWNER_CONNECTIONS)),
         }
     }
 }
@@ -125,11 +132,21 @@ async fn open_connection(
     manager: &WebSocketManager,
     url: &str,
     on_message: Channel<serde_json::Value>,
+    local_owner_slot: Option<OwnedSemaphorePermit>,
 ) -> Result<Id, String> {
+    crate::local_owner_profile::require_relay(url)?;
     let connect_cancel = manager.connect_cancel.lock().await.clone();
+    let websocket_config = local_owner_slot.as_ref().map(|_| {
+        WebSocketConfig::default()
+            .max_message_size(Some(MAX_LOCAL_OWNER_TEXT_FRAME_BYTES))
+            .max_frame_size(Some(MAX_LOCAL_OWNER_TEXT_FRAME_BYTES))
+    });
     let (socket, _) = tokio::select! {
         _ = connect_cancel.cancelled() => return Err("WebSocket connection cancelled".to_string()),
-        result = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url)) => result
+        result = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            connect_async_with_config(url, websocket_config, false),
+        ) => result
             .map_err(|_| "WebSocket connection timed out".to_string())?
             .map_err(|error| error.to_string())?,
     };
@@ -153,6 +170,7 @@ async fn open_connection(
         sender,
         cancel: cancel.clone(),
         task: Mutex::new(None),
+        _local_owner_slot: local_owner_slot,
     });
     let mut task_slot = handle.task.lock().await;
     manager.connections.lock().await.insert(id, handle.clone());
@@ -175,11 +193,27 @@ async fn open_connection(
 #[tauri::command]
 async fn connect(
     manager: tauri::State<'_, WebSocketManager>,
+    state: tauri::State<'_, crate::app_state::AppState>,
     url: String,
     on_message: Channel<serde_json::Value>,
     _config: Option<serde_json::Value>,
 ) -> Result<Id, String> {
-    open_connection(manager.inner(), &url, on_message).await
+    let local_owner_slot = if crate::local_owner_profile::profile_active() {
+        if crate::local_owner_profile::recovery_active(&state) {
+            return Err("identity recovery is required before relay connection".to_string());
+        }
+        state.signing_keys()?;
+        Some(
+            manager
+                .local_owner_slots
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| "local-owner websocket connection limit reached".to_string())?,
+        )
+    } else {
+        None
+    };
+    open_connection(manager.inner(), &url, on_message, local_owner_slot).await
 }
 
 pub(crate) async fn send_message(
@@ -227,10 +261,79 @@ pub(crate) async fn send_message(
 #[tauri::command]
 async fn send(
     manager: tauri::State<'_, WebSocketManager>,
+    state: tauri::State<'_, crate::app_state::AppState>,
     id: Id,
     message: WebSocketMessage,
 ) -> Result<(), String> {
+    if crate::local_owner_profile::profile_active() {
+        if crate::local_owner_profile::recovery_active(&state) {
+            return Err("identity recovery is required before relay send".to_string());
+        }
+        let owner = state.signing_keys()?.public_key().to_hex();
+        validate_local_owner_frame(&message, &owner)?;
+    }
     send_message(manager.inner(), id, message).await
+}
+
+fn validate_local_owner_frame(message: &WebSocketMessage, owner: &str) -> Result<(), String> {
+    let WebSocketMessage::Text(text) = message else {
+        return match message {
+            WebSocketMessage::Ping(payload) | WebSocketMessage::Pong(payload)
+                if payload.len() <= MAX_WEBSOCKET_CONTROL_PAYLOAD_BYTES =>
+            {
+                Ok(())
+            }
+            WebSocketMessage::Ping(_) | WebSocketMessage::Pong(_) => {
+                Err("local-owner websocket control payload exceeds 125 bytes".to_string())
+            }
+            WebSocketMessage::Close(_) => Ok(()),
+            WebSocketMessage::Binary(_) => {
+                Err("local-owner build refuses binary relay frames".to_string())
+            }
+            WebSocketMessage::Text(_) => unreachable!(),
+        };
+    };
+    if text.len() > MAX_LOCAL_OWNER_TEXT_FRAME_BYTES {
+        return Err("local-owner relay frame exceeds the 1 MiB limit".to_string());
+    }
+    let frame: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| "invalid relay frame JSON".to_string())?;
+    let parts = frame
+        .as_array()
+        .ok_or_else(|| "relay frame must be a JSON array".to_string())?;
+    let operation = parts
+        .first()
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "relay frame is missing an operation".to_string())?;
+    match operation {
+        "REQ" | "COUNT" | "CLOSE" => Ok(()),
+        "EVENT" | "AUTH" => {
+            let raw_event = parts
+                .get(1)
+                .ok_or_else(|| format!("{operation} frame is missing its event"))?;
+            let event = nostr::Event::from_json(raw_event.to_string())
+                .map_err(|_| format!("{operation} frame contains an invalid event"))?;
+            event
+                .verify()
+                .map_err(|_| format!("{operation} frame contains an invalid signature"))?;
+            if !event.pubkey.to_hex().eq_ignore_ascii_case(owner) {
+                return Err(format!(
+                    "{operation} frame is not signed by the admitted owner"
+                ));
+            }
+            if operation == "AUTH" {
+                if event.kind.as_u16() != 22_242 {
+                    return Err("AUTH frame must contain a kind 22242 event".to_string());
+                }
+                Ok(())
+            } else {
+                crate::local_owner_profile::require_webview_signed_event(&event)
+            }
+        }
+        _ => Err(format!(
+            "local-owner build refuses outbound relay frame operation {operation:?}"
+        )),
+    }
 }
 
 #[tauri::command]
@@ -349,6 +452,67 @@ mod tests {
         Channel::new(|_: InvokeResponseBody| Ok(()))
     }
 
+    fn event_frame(event: &nostr::Event) -> WebSocketMessage {
+        WebSocketMessage::Text(serde_json::json!(["EVENT", event]).to_string())
+    }
+
+    #[test]
+    fn local_owner_frames_allow_reads_and_owner_interactions_only() {
+        crate::local_owner_profile::with_test_profile_active(|| {
+            let owner = nostr::Keys::generate();
+            let message = nostr::EventBuilder::new(nostr::Kind::Custom(9), "hello")
+                .sign_with_keys(&owner)
+                .unwrap();
+            assert!(validate_local_owner_frame(
+                &event_frame(&message),
+                &owner.public_key().to_hex()
+            )
+            .is_ok());
+            assert!(validate_local_owner_frame(
+                &WebSocketMessage::Text(
+                    serde_json::json!(["REQ", "subscription", {"kinds": [9]}]).to_string(),
+                ),
+                &owner.public_key().to_hex(),
+            )
+            .is_ok());
+
+            let workflow = nostr::EventBuilder::new(nostr::Kind::Custom(30_620), "workflow")
+                .sign_with_keys(&owner)
+                .unwrap();
+            assert!(validate_local_owner_frame(
+                &event_frame(&workflow),
+                &owner.public_key().to_hex()
+            )
+            .is_err());
+            assert!(validate_local_owner_frame(
+                &event_frame(&message),
+                &nostr::Keys::generate().public_key().to_hex()
+            )
+            .is_err());
+            assert!(validate_local_owner_frame(
+                &WebSocketMessage::Binary(vec![1, 2, 3]),
+                &owner.public_key().to_hex(),
+            )
+            .is_err());
+        });
+    }
+
+    #[test]
+    fn local_owner_auth_frame_requires_a_valid_owner_kind_22242_event() {
+        let owner = nostr::Keys::generate();
+        let auth = nostr::EventBuilder::new(nostr::Kind::Custom(22_242), "challenge")
+            .sign_with_keys(&owner)
+            .unwrap();
+        let frame = WebSocketMessage::Text(serde_json::json!(["AUTH", auth]).to_string());
+        assert!(validate_local_owner_frame(&frame, &owner.public_key().to_hex()).is_ok());
+
+        let wrong_kind = nostr::EventBuilder::new(nostr::Kind::Custom(9), "challenge")
+            .sign_with_keys(&owner)
+            .unwrap();
+        let frame = WebSocketMessage::Text(serde_json::json!(["AUTH", wrong_kind]).to_string());
+        assert!(validate_local_owner_frame(&frame, &owner.public_key().to_hex()).is_err());
+    }
+
     #[tokio::test]
     async fn secure_websocket_reaches_tls_without_panicking() {
         install_crypto_provider();
@@ -386,7 +550,7 @@ mod tests {
         });
 
         let manager = WebSocketManager::default();
-        let id = open_connection(&manager, &format!("ws://{address}"), silent_channel())
+        let id = open_connection(&manager, &format!("ws://{address}"), silent_channel(), None)
             .await
             .unwrap();
         send_message(&manager, id, WebSocketMessage::Text("live-probe".into()))
@@ -421,6 +585,7 @@ mod tests {
             sender,
             cancel: CancellationToken::new(),
             task: Mutex::new(None),
+            _local_owner_slot: None,
         });
         manager.connections.lock().await.insert(1, handle.clone());
         let task = tauri::async_runtime::spawn(run_connection(
@@ -465,6 +630,7 @@ mod tests {
                 ready_tx.send(()).unwrap();
                 std::future::pending::<()>().await;
             }))),
+            _local_owner_slot: None,
         });
         manager.connections.lock().await.insert(7, handle);
         ready_rx.await.unwrap();
@@ -490,6 +656,7 @@ mod tests {
             task: Mutex::new(Some(tauri::async_runtime::spawn(async {
                 std::future::pending::<()>().await;
             }))),
+            _local_owner_slot: None,
         });
         manager.connections.lock().await.insert(1, handle);
         gate.cancel();
@@ -525,6 +692,7 @@ mod tests {
             sender: blocked_sender,
             cancel: CancellationToken::new(),
             task: Mutex::new(None),
+            _local_owner_slot: None,
         });
         manager.connections.lock().await.insert(1, blocked);
 
@@ -533,6 +701,7 @@ mod tests {
             sender: healthy_sender.clone(),
             cancel: CancellationToken::new(),
             task: Mutex::new(None),
+            _local_owner_slot: None,
         });
         manager.connections.lock().await.insert(2, healthy);
 

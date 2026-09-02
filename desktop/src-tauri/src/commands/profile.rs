@@ -4,17 +4,24 @@ use buzz_core_pkg::PresenceStatus;
 use serde_json::Value;
 use tauri::State;
 
+#[cfg(not(feature = "local-owner-profile"))]
+use crate::models::UserNotesResponse;
 use crate::{
     app_state::AppState,
     events,
-    managed_agents::persona_events::monotonic_created_at,
-    models::{ProfileInfo, SearchUsersResponse, UserNotesResponse, UsersBatchResponse},
+    models::{ProfileInfo, SearchUsersResponse, UsersBatchResponse},
     nostr_convert,
     relay::{
         query_relay, query_relay_at_with_keys, relay_http_base_url, submit_event,
         submit_event_at_with_keys,
     },
 };
+
+fn monotonic_profile_timestamp(prior_created_at: Option<i64>) -> nostr::Timestamp {
+    let now = nostr::Timestamp::now().as_secs() as i64;
+    let floor = prior_created_at.map_or(0, |timestamp| timestamp.saturating_add(1));
+    nostr::Timestamp::from(now.max(floor) as u64)
+}
 
 #[tauri::command]
 pub async fn get_profile(state: State<'_, AppState>) -> Result<ProfileInfo, String> {
@@ -106,6 +113,7 @@ pub async fn update_profile_at_relay(
     avatar_url: String,
     state: State<'_, AppState>,
 ) -> Result<ProfileInfo, String> {
+    crate::local_owner_profile::require_relay(&relay_url)?;
     let signer = capture_expected_signer(&state, &expected_pubkey)?;
 
     let api_base_url = relay_http_base_url(&relay_url);
@@ -159,7 +167,7 @@ fn build_deferred_profile_event(
 
     Ok(
         events::build_profile(display_name, name, Some(avatar_url), about, nip05)?
-            .custom_created_at(monotonic_created_at(
+            .custom_created_at(monotonic_profile_timestamp(
                 prior_event.map(|event| event.created_at.as_secs() as i64),
             )),
     )
@@ -228,6 +236,7 @@ pub async fn get_users_batch(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn get_user_notes(
     pubkey: String,
     limit: Option<u32>,

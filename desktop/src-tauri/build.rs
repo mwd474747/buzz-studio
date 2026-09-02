@@ -4,6 +4,239 @@ include!("src/commands/reconnect_hook_config.rs");
 
 use base64::Engine as _;
 
+const LOCAL_OWNER_PROFILE_PATH: &str = "../../.release/local-owner-profile.json";
+const LOCAL_OWNER_RATIFICATION_PATH: &str = "../../.release/local-owner-ratification.json";
+const LOCAL_OWNER_SOURCE_RECEIPT_PATH: &str = "generated/local-owner-source-receipt.json";
+const RATIFIED_OWNER_PUBKEY: &str =
+    "ea840b3e14aceac2b09619de28aedda628e79fcb120dea462ed3ccc512875971";
+const RATIFIED_OWNER_DIGEST: &str =
+    "sha256:af3cd8c1007e504b9d0385c0090395f2a4fecef56e34fd91e66301093583637e";
+const RATIFICATION_RECEIPT_DIGEST: &str =
+    "sha256:9ccb24a04428fec6d9638d729bbddf0784c4af0de72c55ef0f3f1c22e9e42517";
+
+#[derive(serde::Deserialize)]
+struct LocalOwnerBuildProfile {
+    schema_version: u8,
+    profile: String,
+    bundle_identifier: String,
+    keyring_service: String,
+    relay_ws_url: String,
+    owner_pubkey: String,
+    owner_pubkey_sha256: String,
+    owner_pin_required: bool,
+    macos_signing: LocalOwnerMacosSigning,
+}
+
+#[derive(serde::Deserialize)]
+struct LocalOwnerMacosSigning {
+    required: bool,
+    team_id: Option<String>,
+    identity: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct LocalOwnerBuildRatification {
+    schema_version: u8,
+    authority: String,
+    ratified_on: String,
+    channel: String,
+    owner_pubkey: String,
+    owner_pubkey_sha256: String,
+    authority_receipt_sha256: String,
+}
+
+#[derive(serde::Deserialize)]
+struct LocalOwnerSourceReceipt {
+    schema_version: u8,
+    profile: String,
+    source_commit: String,
+    source_tree: String,
+    profile_sha256: String,
+    builder_class: String,
+    artifact_stage: String,
+    source_dirty: bool,
+}
+
+fn validate_local_owner_profile() -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let raw = std::fs::read(LOCAL_OWNER_PROFILE_PATH)
+        .map_err(|error| format!("read {LOCAL_OWNER_PROFILE_PATH}: {error}"))?;
+    let profile: LocalOwnerBuildProfile = serde_json::from_slice(&raw)
+        .map_err(|error| format!("parse {LOCAL_OWNER_PROFILE_PATH}: {error}"))?;
+    let ratification_raw = std::fs::read(LOCAL_OWNER_RATIFICATION_PATH)
+        .map_err(|error| format!("read {LOCAL_OWNER_RATIFICATION_PATH}: {error}"))?;
+    let ratification: LocalOwnerBuildRatification = serde_json::from_slice(&ratification_raw)
+        .map_err(|error| format!("parse {LOCAL_OWNER_RATIFICATION_PATH}: {error}"))?;
+    if ratification.schema_version != 1
+        || ratification.authority != "mike"
+        || ratification.ratified_on != "2026-09-01"
+        || ratification.channel != "#local-dev"
+        || ratification.owner_pubkey != RATIFIED_OWNER_PUBKEY
+        || ratification.owner_pubkey_sha256 != RATIFIED_OWNER_DIGEST
+        || ratification.authority_receipt_sha256 != RATIFICATION_RECEIPT_DIGEST
+    {
+        return Err(
+            "local-owner ratification does not match Mike's exact authority receipt".into(),
+        );
+    }
+
+    if profile.schema_version != 1 || profile.profile != "local-owner" {
+        return Err("local-owner profile schema/name mismatch".to_string());
+    }
+    if profile.bundle_identifier != "xyz.block.buzz.app" {
+        return Err("local-owner bundle identifier must be xyz.block.buzz.app".to_string());
+    }
+    if profile.keyring_service != "buzz-desktop" {
+        return Err("local-owner keyring service must be buzz-desktop".to_string());
+    }
+    if profile.relay_ws_url != "ws://localhost:3300" {
+        return Err("local-owner relay must be ws://localhost:3300".to_string());
+    }
+    if !profile.owner_pin_required {
+        return Err("local-owner public-key pin must be required".to_string());
+    }
+    if profile.owner_pubkey.len() != 64
+        || profile.owner_pubkey != profile.owner_pubkey.to_ascii_lowercase()
+        || !profile
+            .owner_pubkey
+            .chars()
+            .all(|value| value.is_ascii_hexdigit())
+    {
+        return Err("local-owner public key must be 64 lowercase hex characters".to_string());
+    }
+    let owner_bytes = (0..profile.owner_pubkey.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&profile.owner_pubkey[index..index + 2], 16)
+                .map_err(|error| format!("decode local-owner public key: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let owner_digest = format!("sha256:{}", hex::encode(Sha256::digest(owner_bytes)));
+    if profile.owner_pubkey_sha256 != owner_digest {
+        return Err("local-owner public key does not match its raw-byte digest".to_string());
+    }
+    if profile.owner_pubkey != ratification.owner_pubkey
+        || profile.owner_pubkey_sha256 != ratification.owner_pubkey_sha256
+    {
+        return Err("local-owner profile does not match the ratified #local-dev owner".to_string());
+    }
+    if !profile.macos_signing.required {
+        return Err("local-owner macOS signing must remain required".to_string());
+    }
+    match (
+        profile.macos_signing.team_id.as_deref(),
+        profile.macos_signing.identity.as_deref(),
+    ) {
+        (None, None) => {}
+        (Some(team_id), Some(identity)) => {
+            if team_id.len() != 10
+                || !team_id
+                    .chars()
+                    .all(|value| value.is_ascii_uppercase() || value.is_ascii_digit())
+            {
+                return Err(
+                    "local-owner Team ID must be exactly 10 uppercase alphanumeric characters"
+                        .to_string(),
+                );
+            }
+            if identity.is_empty() || identity.trim() != identity {
+                return Err(
+                    "local-owner signing identity must be nonempty without surrounding whitespace"
+                        .to_string(),
+                );
+            }
+        }
+        _ => {
+            return Err(
+                "local-owner Team ID and signing identity must be filled together".to_string(),
+            );
+        }
+    }
+
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(raw))))
+}
+
+fn configure_local_owner_profile() {
+    println!("cargo:rerun-if-changed={LOCAL_OWNER_PROFILE_PATH}");
+    println!("cargo:rerun-if-changed={LOCAL_OWNER_RATIFICATION_PATH}");
+    println!("cargo:rerun-if-changed={LOCAL_OWNER_SOURCE_RECEIPT_PATH}");
+    println!("cargo:rerun-if-env-changed=BUZZ_DESKTOP_SOURCE_COMMIT");
+    println!("cargo:rerun-if-env-changed=BUZZ_DESKTOP_SOURCE_TREE");
+
+    if std::env::var_os("CARGO_FEATURE_LOCAL_OWNER_PROFILE").is_none() {
+        return;
+    }
+
+    let profile_digest = match validate_local_owner_profile() {
+        Ok(value) => value,
+        Err(error) => panic!("invalid local-owner profile: {error}"),
+    };
+    let valid_source_oid = |value: &str| {
+        value.len() == 40
+            && value
+                .chars()
+                .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch))
+    };
+    let source_commit = std::env::var("BUZZ_DESKTOP_SOURCE_COMMIT")
+        .ok()
+        .filter(|value| valid_source_oid(value));
+    let expected_source_tree = std::env::var("BUZZ_DESKTOP_SOURCE_TREE")
+        .ok()
+        .filter(|value| valid_source_oid(value));
+
+    if std::env::var("PROFILE").as_deref() == Ok("release")
+        && (source_commit.is_none() || expected_source_tree.is_none())
+    {
+        panic!("local-owner release builds require exact lowercase 40-hex source commit and tree");
+    }
+
+    let source_tree = if std::env::var("PROFILE").as_deref() == Ok("release") {
+        let receipt_raw = match std::fs::read(LOCAL_OWNER_SOURCE_RECEIPT_PATH) {
+            Ok(value) => value,
+            Err(error) => panic!(
+                "local-owner release builds require {LOCAL_OWNER_SOURCE_RECEIPT_PATH}: {error}"
+            ),
+        };
+        let receipt: LocalOwnerSourceReceipt = match serde_json::from_slice(&receipt_raw) {
+            Ok(value) => value,
+            Err(error) => panic!("parse local-owner source receipt: {error}"),
+        };
+        let expected_commit = match source_commit.as_deref() {
+            Some(value) => value,
+            None => panic!("local-owner source commit disappeared during build validation"),
+        };
+        let expected_tree = match expected_source_tree.as_deref() {
+            Some(value) => value,
+            None => panic!("local-owner source tree disappeared during build validation"),
+        };
+        if receipt.schema_version != 1
+            || receipt.profile != "local-owner"
+            || receipt.source_commit != expected_commit
+            || receipt.source_tree != expected_tree
+            || receipt.profile_sha256 != profile_digest
+            || receipt.builder_class != "buzz-local-owner-tauri-wrapper"
+            || receipt.artifact_stage != "unsigned-before-apple-signing"
+            || receipt.source_dirty
+            || !valid_source_oid(&receipt.source_commit)
+            || !valid_source_oid(&receipt.source_tree)
+        {
+            panic!("local-owner source receipt does not match the release build inputs");
+        }
+        Some(receipt.source_tree)
+    } else {
+        None
+    };
+
+    println!("cargo:rustc-env=BUZZ_DESKTOP_LOCAL_OWNER_PROFILE_SHA256={profile_digest}");
+    if let Some(commit) = source_commit {
+        println!("cargo:rustc-env=BUZZ_DESKTOP_SOURCE_COMMIT={commit}");
+    }
+    if let Some(tree) = source_tree {
+        println!("cargo:rustc-env=BUZZ_DESKTOP_SOURCE_TREE={tree}");
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=BUZZ_RELAY_URL");
     println!("cargo:rerun-if-env-changed=BUZZ_RELAY_HTTP");
@@ -17,6 +250,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AGENT_METRIC_ARCHIVE_DEFAULT");
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY");
     println!("cargo:rustc-check-cfg=cfg(buzz_updater_enabled)");
+
+    configure_local_owner_profile();
 
     if let Ok(relay_url) = std::env::var("BUZZ_RELAY_URL") {
         println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_RELAY_URL={relay_url}");

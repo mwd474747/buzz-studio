@@ -577,3 +577,21 @@ test("publishSplitSlots_noopSuppression_skipsWhenUnchanged", async () => {
 
   mgr.destroy();
 });
+
+test("local-only manager preserves read actions without relay fetch or publish", async () => {
+  globalThis.window.localStorage = makeLocalStorage();
+  const fail = () => {
+    throw new Error("local-only read state must not call the relay");
+  };
+  const mgr = new ReadStateManager(
+    "c".repeat(64),
+    { fetchEvents: fail, publishEvent: fail, subscribeLive: fail },
+    false,
+  );
+
+  await mgr.initialize();
+  mgr.markContextRead("local-channel", 1234);
+
+  assert.equal(mgr.getOwnTimestamp("local-channel"), 1234);
+  mgr.destroy();
+});

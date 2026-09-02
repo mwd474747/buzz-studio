@@ -29,7 +29,7 @@ export function WaveMessageAttachment({
   huddleMemberPubkeysPending = false,
 }: WaveMessageAttachmentProps) {
   const queryClient = useQueryClient();
-  const { isStarting, startHuddle } = useHuddle();
+  const { available, isStarting, startHuddle } = useHuddle();
   const startHuddleDisabled =
     !channelId || isStarting || huddleMemberPubkeysPending;
 
@@ -73,16 +73,18 @@ export function WaveMessageAttachment({
           Start a huddle to talk to them.
         </AttachmentDescription>
       </AttachmentContent>
-      <AttachmentActions>
-        <AttachmentAction
-          disabled={startHuddleDisabled}
-          onClick={handleStartHuddle}
-          size="xs"
-          type="button"
-        >
-          Start huddle
-        </AttachmentAction>
-      </AttachmentActions>
+      {available ? (
+        <AttachmentActions>
+          <AttachmentAction
+            disabled={startHuddleDisabled}
+            onClick={handleStartHuddle}
+            size="xs"
+            type="button"
+          >
+            Start huddle
+          </AttachmentAction>
+        </AttachmentActions>
+      ) : null}
     </Attachment>
   );
 }

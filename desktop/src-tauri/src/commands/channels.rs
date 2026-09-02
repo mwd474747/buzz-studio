@@ -2,23 +2,30 @@ use tauri::State;
 
 use crate::{
     app_state::AppState,
-    events,
     models::{ChannelDetailInfo, ChannelInfo, ChannelMembersResponse},
     nostr_convert,
-    relay::{query_relay, relay_api_base_url_with_override, submit_event, submit_event_with_keys},
+    relay::query_relay,
+};
+#[cfg(not(feature = "local-owner-profile"))]
+use crate::{
+    events,
+    relay::{relay_api_base_url_with_override, submit_event, submit_event_with_keys},
 };
 
 // ── Reads (pure-nostr via /query) ────────────────────────────────────────────
 
 const DIRECTORY_PAGE_SIZE: usize = 500;
+#[cfg(not(feature = "local-owner-profile"))]
 const STARTER_CHANNEL_NAMESPACE: uuid::Uuid = uuid::uuid!("3ce33bea-8f09-5f1b-9c85-8a7d2659e6b0");
 
+#[cfg(not(feature = "local-owner-profile"))]
 struct StarterChannelSpec {
     slug: &'static str,
     name: &'static str,
     description: &'static str,
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 const STARTER_CHANNELS: &[StarterChannelSpec] = &[
     StarterChannelSpec {
         slug: "general",
@@ -72,7 +79,15 @@ async fn query_relay_all(
 /// keeps one identity's pending entry from covering another's — is directly
 /// unit-testable without going through the async relay-backed command.
 fn classify_pending_owner(state: &AppState, my_pubkey: &str, d_tag: Option<&str>) -> bool {
-    d_tag.is_some_and(|d| state.is_pending_owned_channel(my_pubkey, d))
+    #[cfg(not(feature = "local-owner-profile"))]
+    {
+        d_tag.is_some_and(|d| state.is_pending_owned_channel(my_pubkey, d))
+    }
+    #[cfg(feature = "local-owner-profile")]
+    {
+        let _ = (state, my_pubkey, d_tag);
+        false
+    }
 }
 
 #[tauri::command]
@@ -115,6 +130,7 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
     // so a channel this identity created no longer speaks through the overlay
     // once genuine membership is observable, and a later leave correctly
     // flips it back to `is_member=false`.
+    #[cfg(not(feature = "local-owner-profile"))]
     for id in &channel_ids {
         state.clear_pending_owned_channel(&my_pubkey, id);
     }
@@ -461,23 +477,28 @@ pub async fn get_channel_members(
 
 // ── Writes (signed events) ──────────────────────────────────────────────────
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn parse_channel_uuid(channel_id: &str) -> Result<uuid::Uuid, String> {
     uuid::Uuid::parse_str(channel_id).map_err(|_| format!("invalid channel UUID: {channel_id}"))
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn normalize_channel_name(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn starter_channel_uuid(relay_scope: &str, slug: &str) -> uuid::Uuid {
     let name = format!("starter-channel:v1:{}:{}", relay_scope.trim(), slug);
     uuid::Uuid::new_v5(&STARTER_CHANNEL_NAMESPACE, name.as_bytes())
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn is_duplicate_channel_rejection(error: &str) -> bool {
     error.contains("relay rejected event:") && error.contains("duplicate: channel already exists")
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn is_matching_starter_channel(channel: &ChannelInfo, spec: &StarterChannelSpec) -> bool {
     normalize_channel_name(&channel.name) == normalize_channel_name(spec.name)
         && channel.channel_type == "stream"
@@ -485,6 +506,7 @@ fn is_matching_starter_channel(channel: &ChannelInfo, spec: &StarterChannelSpec)
         && channel.archived_at.is_none()
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn has_all_starter_channels(channels: &[ChannelInfo]) -> bool {
     STARTER_CHANNELS.iter().all(|spec| {
         channels
@@ -493,6 +515,7 @@ fn has_all_starter_channels(channels: &[ChannelInfo]) -> bool {
     })
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 async fn ensure_starter_channel_memberships(
     state: &AppState,
     keys: &nostr::Keys,
@@ -519,6 +542,7 @@ async fn ensure_starter_channel_memberships(
     Ok(())
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 async fn fetch_starter_channel_metadata(
     state: &AppState,
     channel_ids: &[String],
@@ -544,6 +568,7 @@ async fn fetch_starter_channel_metadata(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn create_channel(
     name: String,
     channel_type: String,
@@ -609,6 +634,7 @@ pub async fn create_channel(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn ensure_starter_channels(
     state: State<'_, AppState>,
 ) -> Result<Vec<ChannelInfo>, String> {
@@ -683,6 +709,7 @@ pub async fn ensure_starter_channels(
 }
 
 #[derive(serde::Deserialize)]
+#[cfg(not(feature = "local-owner-profile"))]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateChannelInput {
     pub channel_id: String,
@@ -698,6 +725,7 @@ pub struct UpdateChannelInput {
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn update_channel(
     input: UpdateChannelInput,
     state: State<'_, AppState>,
@@ -730,6 +758,7 @@ pub async fn update_channel(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn set_channel_topic(
     channel_id: String,
     topic: String,
@@ -742,6 +771,7 @@ pub async fn set_channel_topic(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn set_channel_purpose(
     channel_id: String,
     purpose: String,
@@ -754,6 +784,7 @@ pub async fn set_channel_purpose(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn archive_channel(channel_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let uuid = parse_channel_uuid(&channel_id)?;
     let builder = events::build_archive(uuid)?;
@@ -762,6 +793,7 @@ pub async fn archive_channel(channel_id: String, state: State<'_, AppState>) -> 
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn unarchive_channel(
     channel_id: String,
     state: State<'_, AppState>,
@@ -773,6 +805,7 @@ pub async fn unarchive_channel(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn delete_channel(channel_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let uuid = parse_channel_uuid(&channel_id)?;
     let builder = events::build_delete_channel(uuid)?;
@@ -781,6 +814,7 @@ pub async fn delete_channel(channel_id: String, state: State<'_, AppState>) -> R
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn add_channel_members(
     channel_id: String,
     pubkeys: Vec<String>,
@@ -817,6 +851,7 @@ pub async fn add_channel_members(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn remove_channel_member(
     channel_id: String,
     pubkey: String,
@@ -829,6 +864,7 @@ pub async fn remove_channel_member(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn change_channel_member_role(
     channel_id: String,
     pubkey: String,
@@ -849,6 +885,7 @@ pub async fn change_channel_member_role(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn join_channel(channel_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let uuid = parse_channel_uuid(&channel_id)?;
     let builder = events::build_join(uuid)?;
@@ -857,6 +894,7 @@ pub async fn join_channel(channel_id: String, state: State<'_, AppState>) -> Res
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn leave_channel(channel_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let uuid = parse_channel_uuid(&channel_id)?;
     let builder = events::build_leave(uuid)?;
@@ -864,6 +902,6 @@ pub async fn leave_channel(channel_id: String, state: State<'_, AppState>) -> Re
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 #[path = "channels_tests.rs"]
 mod tests;

@@ -1,3 +1,4 @@
+#[cfg(not(feature = "local-owner-profile"))]
 use axum::{
     body::Body,
     extract::{Request, State as AxumState},
@@ -7,7 +8,10 @@ use axum::{
     Router,
 };
 use futures_util::TryStreamExt;
-use tauri::{http, Manager};
+use tauri::http;
+#[cfg(not(feature = "local-owner-profile"))]
+use tauri::Manager;
+#[cfg(not(feature = "local-owner-profile"))]
 use tokio::net::TcpListener;
 
 use crate::app_state::AppState;
@@ -20,12 +24,41 @@ use crate::relay;
 /// requests for seeking, so this only catches edge cases.
 const MAX_PROXY_RESPONSE: u64 = 20 * 1024 * 1024;
 
+enum BoundedBodyError {
+    TooLarge,
+    Read,
+}
+
+async fn read_bounded_body(response: reqwest::Response) -> Result<Vec<u8>, BoundedBodyError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROXY_RESPONSE)
+    {
+        return Err(BoundedBodyError::TooLarge);
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream
+        .try_next()
+        .await
+        .map_err(|_| BoundedBodyError::Read)?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_PROXY_RESPONSE as usize {
+            return Err(BoundedBodyError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 #[derive(Clone)]
+#[cfg(not(feature = "local-owner-profile"))]
 struct ProxyState {
     client: reqwest::Client,
     app_handle: tauri::AppHandle,
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 async fn proxy_handler(AxumState(state): AxumState<ProxyState>, req: Request) -> Response {
     // Allow requests with no Origin (e.g. <video> element fetches) or from
     // the Tauri webview origin. Blocks cross-origin JS fetches from other
@@ -127,6 +160,7 @@ async fn proxy_handler(AxumState(state): AxumState<ProxyState>, req: Request) ->
 /// Spawn a localhost HTTP proxy that streams media via reqwest, avoiding the
 /// Tauri protocol handler's requirement to buffer the entire response into
 /// `Vec<u8>`. Returns the OS-assigned port.
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn spawn_media_proxy(http_client: reqwest::Client, app_handle: tauri::AppHandle) -> u16 {
     let proxy_state = ProxyState {
         client: http_client,
@@ -162,6 +196,9 @@ pub async fn handle_buzz_media(
     use tauri::Manager;
 
     let state = app.state::<AppState>();
+    if crate::local_owner_profile::recovery_active(&state) {
+        return error_response(423, "identity recovery required");
+    }
     let base = relay::relay_api_base_url_with_override(&state);
 
     // Preserve path + query (thumbnails may have query params).
@@ -176,7 +213,6 @@ pub async fn handle_buzz_media(
         return error_response(404, "not found");
     }
 
-    let has_range = request.headers().contains_key("range");
     let upstream_url = format!("{base}{path_and_query}");
 
     // Forward Range header if present — enables video seeking through the proxy.
@@ -247,23 +283,10 @@ pub async fn handle_buzz_media(
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
 
-            // OOM guard: if this is a non-range GET and the upstream body is
-            // larger than our cap, bail with 413 instead of buffering into RAM.
-            // Tauri's protocol handler requires Vec<u8> so we can't truly stream.
-            if !has_range {
-                if let Some(ref cl) = content_length {
-                    if let Ok(len) = cl.parse::<u64>() {
-                        if len > MAX_PROXY_RESPONSE {
-                            return error_response(
-                                413,
-                                "response too large — use range requests for video playback",
-                            );
-                        }
-                    }
-                }
-            }
-
-            match resp.bytes().await {
+            // Tauri custom protocols require a complete Vec. Enforce the cap
+            // while streaming so chunked, missing-length, and range responses
+            // cannot bypass the memory boundary.
+            match read_bounded_body(resp).await {
                 Ok(bytes) => {
                     let mut builder = http::Response::builder()
                         .status(status)
@@ -287,10 +310,13 @@ pub async fn handle_buzz_media(
                         builder = builder.header("last-modified", lm);
                     }
                     builder
-                        .body(bytes.to_vec())
+                        .body(bytes)
                         .unwrap_or_else(|_| error_response(500, "response build failed"))
                 }
-                Err(_) => error_response(502, "failed to read upstream body"),
+                Err(BoundedBodyError::TooLarge) => {
+                    error_response(413, "response exceeds the 20 MiB media limit")
+                }
+                Err(BoundedBodyError::Read) => error_response(502, "failed to read upstream body"),
             }
         }
         Err(_) => error_response(502, "upstream request failed"),

@@ -1,10 +1,8 @@
 use tauri::State;
 
-use crate::{
-    app_state::AppState,
-    events,
-    relay::{query_relay, submit_event},
-};
+use crate::{app_state::AppState, relay::query_relay};
+#[cfg(not(feature = "local-owner-profile"))]
+use crate::{events, relay::submit_event};
 
 /// Read the most recent canvas event (kind:40100) for a channel.
 #[tauri::command]
@@ -43,6 +41,7 @@ pub async fn get_canvas(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn set_canvas(
     channel_id: String,
     content: String,

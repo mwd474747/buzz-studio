@@ -99,6 +99,7 @@ async fn boundary_submit_event_at_with_keys_blocks_ncryptsec() {
 
 /// Boundary 2: `relay.rs` `sync_managed_agent_profile` (agent kind:0 profile).
 #[tokio::test]
+#[cfg(not(feature = "local-owner-profile"))]
 async fn boundary_sync_managed_agent_profile_blocks_ncryptsec() {
     let state = crate::app_state::build_app_state();
     let keys = nostr::Keys::generate();
@@ -138,6 +139,7 @@ async fn boundary_submit_signed_event_at_with_keys_blocks_ncryptsec() {
 
 /// Boundary 4: `relay.rs` `submit_signed_event_with_keys`.
 #[tokio::test]
+#[cfg(not(feature = "local-owner-profile"))]
 async fn boundary_submit_signed_event_with_keys_blocks_ncryptsec() {
     let state = crate::app_state::build_app_state();
     *state.relay_url_override.lock().unwrap() = Some("ws://127.0.0.1:9".to_string());
@@ -153,6 +155,7 @@ async fn boundary_submit_signed_event_with_keys_blocks_ncryptsec() {
 
 /// Boundary 5: huddle STT publisher (`huddle/pipeline.rs`).
 #[test]
+#[cfg(not(feature = "local-owner-profile"))]
 fn boundary_huddle_stt_blocks_ncryptsec() {
     let keys = nostr::Keys::generate();
     let channel = uuid::Uuid::new_v4();

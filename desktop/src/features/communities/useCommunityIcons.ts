@@ -7,6 +7,7 @@ import {
   loadCachedCommunityIcon,
   saveCachedCommunityIcon,
 } from "./communityIconCache";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 
 export const communityIconQueryKey = (relayUrl: string) =>
   ["communityIcon", relayUrl] as const;
@@ -41,20 +42,27 @@ function iconQueryOptions(community: Community) {
 export function useCommunityIcons(
   communities: Community[],
 ): Record<string, string | null> {
+  const localOwnerPolicy = useLocalOwnerPolicy();
   const results = useQueries({
-    queries: communities.map((community) => iconQueryOptions(community)),
+    queries:
+      localOwnerPolicy === "inactive"
+        ? communities.map((community) => iconQueryOptions(community))
+        : [],
   });
 
   const icons: Record<string, string | null> = {};
   communities.forEach((community, index) => {
     icons[community.id] =
-      results[index]?.data ?? loadCachedCommunityIcon(community.relayUrl);
+      localOwnerPolicy === "inactive"
+        ? (results[index]?.data ?? loadCachedCommunityIcon(community.relayUrl))
+        : null;
   });
   return icons;
 }
 
 /** Icon of the ACTIVE community, for settings preview. */
 export function useActiveCommunityIcon(relayUrl: string | undefined) {
+  const localOwnerPolicy = useLocalOwnerPolicy();
   return useQuery({
     queryKey: communityIconQueryKey(relayUrl ?? ""),
     queryFn: async () => {
@@ -62,7 +70,7 @@ export function useActiveCommunityIcon(relayUrl: string | undefined) {
       if (relayUrl) saveCachedCommunityIcon(relayUrl, icon);
       return icon;
     },
-    enabled: relayUrl !== undefined,
+    enabled: relayUrl !== undefined && localOwnerPolicy === "inactive",
     staleTime: ICON_STALE_MS,
   });
 }
