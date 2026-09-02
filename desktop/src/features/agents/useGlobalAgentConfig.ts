@@ -23,11 +23,12 @@ const EMPTY_CONFIG: GlobalAgentConfig = {
 
 export const globalAgentConfigQueryKey = ["globalAgentConfig"] as const;
 
-export function useGlobalAgentConfig(): {
+export function useGlobalAgentConfig(options?: { enabled?: boolean }): {
   globalConfig: GlobalAgentConfig;
   isLoading: boolean;
 } {
   const { data, isPending } = useQuery({
+    enabled: options?.enabled ?? true,
     queryKey: globalAgentConfigQueryKey,
     queryFn: getGlobalAgentConfig,
     // Config is only mutated via setGlobalAgentConfig — treat as stable until

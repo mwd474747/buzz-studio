@@ -1,8 +1,9 @@
 import * as React from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Navigate } from "@tanstack/react-router";
 
 import { usePreviewFeatureWarning } from "@/shared/features";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 
 const ProjectDetailScreen = React.lazy(async () => {
   const module = await import("@/features/projects/ui/ProjectDetailScreen");
@@ -23,9 +24,17 @@ export const Route = createFileRoute("/projects/$projectId")({
 });
 
 function ProjectDetailRouteComponent() {
+  const localOwnerPolicy = useLocalOwnerPolicy();
   usePreviewFeatureWarning("projects");
   const { projectId } = Route.useParams();
   const { commitHash, pullRequestId, issueId } = Route.useSearch();
+
+  if (localOwnerPolicy === "loading") {
+    return <ViewLoadingFallback kind="projects" />;
+  }
+  if (localOwnerPolicy !== "inactive") {
+    return <Navigate replace to="/" />;
+  }
 
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="projects" />}>

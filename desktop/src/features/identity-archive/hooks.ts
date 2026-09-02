@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { useMyRelayMembershipQuery } from "@/features/community-members/hooks";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import {
   archiveIdentity,
@@ -18,8 +19,10 @@ export const archivedIdentitiesQueryKey = ["archivedIdentities"] as const;
 
 /** Cache the relay's `kind:13535` snapshot. Drives the "Archived" flair. */
 export function useArchivedIdentitiesQuery(enabled = true) {
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const archiveEnabled = enabled && localOwnerPolicy === "inactive";
   return useQuery<ArchivedIdentitiesSnapshot>({
-    enabled,
+    enabled: archiveEnabled,
     queryKey: archivedIdentitiesQueryKey,
     queryFn: listArchivedIdentities,
     staleTime: 30_000,
@@ -27,8 +30,11 @@ export function useArchivedIdentitiesQuery(enabled = true) {
 }
 
 /** `undefined` while the snapshot loads so callers can defer the flair. */
-export function useIsIdentityArchived(pubkey: string): boolean | undefined {
-  const query = useArchivedIdentitiesQuery();
+export function useIsIdentityArchived(
+  pubkey: string,
+  enabled = true,
+): boolean | undefined {
+  const query = useArchivedIdentitiesQuery(enabled);
   if (!query.data) return undefined;
   const lower = pubkey.toLowerCase();
   return query.data.archived.includes(lower);
@@ -118,6 +124,7 @@ export type IdentityArchiveActions = {
  */
 export function useIdentityArchive(
   pubkey: string | null,
+  enabled = true,
 ): IdentityArchiveActions {
   const identityQuery = useIdentityQuery();
   const currentPubkey = identityQuery.data?.pubkey;
@@ -128,16 +135,16 @@ export function useIdentityArchive(
   const isSelf =
     currentPubkey !== undefined && pubkeyLower === currentPubkey.toLowerCase();
 
-  const myMembershipQuery = useMyRelayMembershipQuery();
+  const myMembershipQuery = useMyRelayMembershipQuery(enabled);
   // Skip the kind:0 lookup when viewing yourself — the OA gate is for
   // archiving *other* identities you own. Also defer until our own identity
   // resolves so we never fire the lookup against an unknown viewer.
   const oaOwnerQuery = useOaOwnerQuery(
     targetPubkey,
-    hasTargetPubkey && currentPubkey !== undefined && !isSelf,
+    enabled && hasTargetPubkey && currentPubkey !== undefined && !isSelf,
   );
 
-  const isArchived = useIsIdentityArchived(targetPubkey);
+  const isArchived = useIsIdentityArchived(targetPubkey, enabled);
 
   const archiveMutation = useArchiveIdentityMutation();
   const unarchiveMutation = useUnarchiveIdentityMutation();
@@ -146,7 +153,9 @@ export function useIdentityArchive(
   const isRelayAdminOrOwner = myRole === "owner" || myRole === "admin";
   const isOaOwnerOfViewee = oaOwnerQuery.data?.isMe === true;
   const canArchive =
-    hasTargetPubkey && (isSelf || isRelayAdminOrOwner || isOaOwnerOfViewee);
+    enabled &&
+    hasTargetPubkey &&
+    (isSelf || isRelayAdminOrOwner || isOaOwnerOfViewee);
 
   const archive = React.useCallback(() => {
     if (!hasTargetPubkey) return;

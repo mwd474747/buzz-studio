@@ -40,8 +40,8 @@ type ChannelScreenHeaderProps = {
   transparentChrome?: boolean;
   onAddBotOpenChange?: (open: boolean) => void;
   onJoinChannel?: () => Promise<void>;
-  onManageChannel: () => void;
-  onToggleMembers: () => void;
+  onManageChannel?: () => void;
+  onToggleMembers?: () => void;
 };
 
 export function ChannelScreenHeader({
@@ -85,7 +85,7 @@ export function ChannelScreenHeader({
         <LogIn className="mr-1.5 h-4 w-4" />
         {isJoining ? "Joining…" : "Join"}
       </Button>
-    ) : (
+    ) : onManageChannel && onToggleMembers ? (
       <ChannelMembersBar
         channel={activeChannel}
         currentPubkey={currentPubkey}
@@ -95,7 +95,7 @@ export function ChannelScreenHeader({
         onToggleMembers={onToggleMembers}
         variant={actionsVariant}
       />
-    )
+    ) : null
   ) : null;
 
   if (!showHeaderContent) {

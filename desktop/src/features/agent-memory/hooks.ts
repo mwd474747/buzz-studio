@@ -38,8 +38,10 @@ export const agentMemoryQueryKey = (agentPubkey: string) =>
  */
 export function useIsManagedAgent(
   agentPubkey: string | null | undefined,
+  options?: { enabled?: boolean },
 ): boolean | undefined {
-  const query = useManagedAgentsQuery();
+  const enabled = (options?.enabled ?? true) && Boolean(agentPubkey);
+  const query = useManagedAgentsQuery({ enabled });
   if (!agentPubkey) return false;
   if (!query.data) return undefined;
   const lower = agentPubkey.toLowerCase();

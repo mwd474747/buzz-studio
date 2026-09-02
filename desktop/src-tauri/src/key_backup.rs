@@ -10,8 +10,12 @@
 //! Creation decrypt-verifies the fresh blob against the live identity before
 //! returning it. Portable copies use atomic, owner-only file writes.
 
-use nostr::nips::nip49::{EncryptedSecretKey, KeySecurity};
-use nostr::{FromBech32, Keys, ToBech32};
+use nostr::nips::nip49::EncryptedSecretKey;
+#[cfg(not(feature = "local-owner-profile"))]
+use nostr::nips::nip49::KeySecurity;
+#[cfg(not(feature = "local-owner-profile"))]
+use nostr::ToBech32;
+use nostr::{FromBech32, Keys};
 
 /// Bech32 prefix of NIP-49 encrypted secret keys. Import routing is
 /// case-insensitive because bech32 permits all-uppercase encodings.
@@ -20,6 +24,7 @@ pub const NCRYPTSEC_HRP: &str = "ncryptsec1";
 /// scrypt cost for new backups (2^18 — Gossip's desktop default, ~256 MiB).
 /// The blob self-describes its cost, so this can be raised later without
 /// breaking existing backups.
+#[cfg(not(feature = "local-owner-profile"))]
 pub const BACKUP_LOG_N: u8 = 18;
 
 /// Highest scrypt cost accepted when decrypting an untrusted backup.
@@ -28,25 +33,31 @@ pub const BACKUP_LOG_N: u8 = 18;
 /// Buzz itself emits keeps generated and upstream-compatible lower-cost backups
 /// readable without allowing a crafted payload to request unbounded memory
 /// before password authentication.
-pub const MAX_VERIFY_LOG_N: u8 = BACKUP_LOG_N;
+pub const MAX_VERIFY_LOG_N: u8 = 18;
 
 /// Filename of the app-managed canonical backup inside the app data dir.
+#[cfg(not(feature = "local-owner-profile"))]
 pub const BACKUP_FILE_NAME: &str = "identity.ncryptsec";
 
 /// Default number of words in a generated backup passphrase. Three words
 /// from a 1296-word list ≈ 31 bits of entropy before the scrypt work factor.
+#[cfg(not(feature = "local-owner-profile"))]
 pub const DEFAULT_PASSPHRASE_WORDS: usize = 3;
 
 /// Bounds for the generator's word-count control. At the lower bound a draw
 /// can fall below [`MIN_PASSPHRASE_LEN`] (three 3-char words), so
 /// [`generate_passphrase`] re-draws until the phrase meets the minimum.
+#[cfg(not(feature = "local-owner-profile"))]
 pub const MIN_PASSPHRASE_WORDS: usize = 3;
+#[cfg(not(feature = "local-owner-profile"))]
 pub const MAX_PASSPHRASE_WORDS: usize = 10;
 
 /// EFF short wordlist 2.0 (1296 words, one per line).
+#[cfg(not(feature = "local-owner-profile"))]
 const WORDLIST: &str = include_str!("assets/eff_short_wordlist_2_0.txt");
 
 /// Minimum length for a user-chosen passphrase.
+#[cfg(not(feature = "local-owner-profile"))]
 pub const MIN_PASSPHRASE_LEN: usize = 12;
 
 /// Encrypt the identity secret key under `password` and verify the result.
@@ -54,6 +65,7 @@ pub const MIN_PASSPHRASE_LEN: usize = 12;
 /// Returns the bech32 `ncryptsec1…` string. The fresh blob is decrypted and
 /// its derived pubkey compared to the live identity **before** returning, so
 /// a returned blob is always provably recoverable with the same password.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn create_backup_blob(keys: &Keys, password: &str, log_n: u8) -> Result<String, String> {
     let secret_key = keys.secret_key();
 
@@ -75,6 +87,7 @@ pub fn create_backup_blob(keys: &Keys, password: &str, log_n: u8) -> Result<Stri
 
 /// Decrypt `ncryptsec` with `password` and assert it recovers a key whose
 /// public key equals `expected_pubkey`.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn verify_backup_blob(
     ncryptsec: &str,
     password: &str,
@@ -129,6 +142,7 @@ pub fn recover_keys_from_input(input: &str, password: Option<&str>) -> Result<Ke
 }
 
 /// Path of the canonical app-managed backup file.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn backup_file_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join(BACKUP_FILE_NAME)
 }
@@ -136,6 +150,7 @@ pub fn backup_file_path(data_dir: &std::path::Path) -> std::path::PathBuf {
 /// Atomically write `ncryptsec` to `path` with owner-only permissions, then
 /// reread and byte-compare. Same crash-safety pattern as
 /// `app_state::save_key_file`.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn write_backup_file(path: &std::path::Path, ncryptsec: &str) -> Result<(), String> {
     use atomic_write_file::AtomicWriteFile;
     use std::io::Write;
@@ -166,6 +181,7 @@ pub fn write_backup_file(path: &std::path::Path, ncryptsec: &str) -> Result<(), 
 }
 
 /// Delete the app-managed backup if present. Missing files are already clean.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn delete_backup_file(data_dir: &std::path::Path) -> Result<(), String> {
     let path = backup_file_path(data_dir);
     match std::fs::remove_file(path) {
@@ -176,6 +192,7 @@ pub fn delete_backup_file(data_dir: &std::path::Path) -> Result<(), String> {
 }
 
 /// Remove the app-managed backup only when an import changes identities.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn cleanup_stale_backup(
     previous: &nostr::PublicKey,
     new: &nostr::PublicKey,
@@ -196,6 +213,7 @@ pub fn cleanup_stale_backup(
 /// and re-drawn — the result always passes the same length gate applied to
 /// user-chosen passphrases. Uses rejection sampling for a uniform
 /// distribution over the 1296 words.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn generate_passphrase(word_count: usize, separator: &str) -> Result<String, String> {
     let word_count = word_count.clamp(MIN_PASSPHRASE_WORDS, MAX_PASSPHRASE_WORDS);
     let words: Vec<&str> = WORDLIST.lines().filter(|l| !l.is_empty()).collect();
@@ -229,6 +247,6 @@ pub fn generate_passphrase(word_count: usize, separator: &str) -> Result<String,
     Err("could not generate a passphrase meeting the minimum length".to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 #[path = "key_backup_tests.rs"]
 mod tests;

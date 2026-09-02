@@ -2,19 +2,25 @@ use std::{
     collections::HashMap,
     io::Write,
     sync::{
-        atomic::{AtomicBool, AtomicU16, AtomicU8},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU8},
+        Mutex,
     },
 };
 
+#[cfg(not(feature = "local-owner-profile"))]
+use std::{sync::atomic::AtomicU16, sync::Arc};
+
 use nostr::{Keys, ToBech32};
 use tauri::{AppHandle, Manager};
-#[cfg(feature = "mesh-llm")]
+#[cfg(all(feature = "mesh-llm", not(feature = "local-owner-profile")))]
 use tokio::sync::Mutex as AsyncMutex;
 
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::huddle::HuddleState;
 pub(crate) use crate::identity_storage::{IdentityStorage, RecoveryState, ResolvedIdentity};
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::managed_agents::config_bridge::SessionConfigCache;
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::managed_agents::{ManagedAgentPairRuntime, ManagedAgentRuntimeKey};
 
 pub struct AppState {
@@ -38,56 +44,48 @@ pub struct AppState {
     /// Set during backend setup when managed agents are eligible for launch
     /// restore. `apply_workspace` consumes it after installing the workspace
     /// relay and identity, so agents never start against the fallback relay.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub managed_agent_restore_pending: AtomicBool,
     /// Whether desktop may repair managed-agent kind:0 profiles from its local
     /// records. Disabled by the agent-managed profiles experiment so an agent's
     /// own profile updates are not overwritten on start or restore.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub managed_agent_profile_reconcile_enabled: AtomicBool,
     /// Shared shutdown signal checked by launch-time agent restoration.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub shutdown_started: AtomicBool,
     /// Serializes every managed-runtime transition that changes the protected
     /// PID set: spawn/register, adoption, stop, shutdown, and sweep snapshots.
     /// Never perform network I/O while holding this lock.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub managed_agent_runtime_transition: Mutex<()>,
+    #[cfg(not(feature = "local-owner-profile"))]
     pub managed_agents_store_lock: Mutex<()>,
+    #[cfg(not(feature = "local-owner-profile"))]
     pub channel_templates_store_lock: Mutex<()>,
+    #[cfg(not(feature = "local-owner-profile"))]
     pub managed_agent_processes: Mutex<HashMap<ManagedAgentRuntimeKey, ManagedAgentPairRuntime>>,
+    #[cfg(not(feature = "local-owner-profile"))]
     pub huddle_state: Mutex<HuddleState>,
+    #[cfg(not(feature = "local-owner-profile"))]
     pub huddle_audio: crate::huddle::tts_settings::HuddleAudioSettingsState,
     /// Tauri app handle — stored after setup so huddle commands can emit
     /// `huddle-state-changed` events without needing the handle threaded
     /// through every call site.
     ///
     /// Set once during `setup()` in `lib.rs`; never cleared.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub app_handle: Mutex<Option<AppHandle>>,
     /// Port of the localhost media streaming proxy (set during setup).
+    #[cfg(not(feature = "local-owner-profile"))]
     pub media_proxy_port: AtomicU16,
-    /// Set when identity resolution detected a "keyring-locked" state: the
-    /// keyring is unreachable this boot but a migration marker shows the key
-    /// lives there. An ephemeral key is generated so the app can open; all
-    /// signing commands check this flag via [`AppState::signing_keys`] and
-    /// return `Err` so no events are published under the inaccessible identity.
-    /// Mutually exclusive with `identity_lost` (guaranteed by `RecoveryState`
-    /// at the resolve boundary).
-    ///
-    /// Ordering: writers store with `Ordering::Release` after `state.keys` is
-    /// updated, so a reader observing `false` with `Ordering::Acquire` is
-    /// guaranteed to see the updated keys. Writers: `setup()` (initial
-    /// resolution via `resolve_persisted_identity`) and `import_identity`
-    /// (clears the flag when the user successfully imports a new key).
+    /// The keyring was unreachable at boot; signing remains unavailable.
     pub keyring_locked: AtomicBool,
-    /// Set when identity resolution detected a "lost" state: the migration
-    /// marker was present but the keyring was empty and no plaintext fallback
-    /// existed. An ephemeral key was generated to let the app boot; the
-    /// frontend checks this flag via `get_identity` and routes to the nsec
-    /// re-import step instead of the normal onboarding profile flow.
-    ///
-    /// Ordering: writers store with `Ordering::Release` after `state.keys` is
-    /// updated, so a reader observing `false` with `Ordering::Acquire` is
-    /// guaranteed to see the updated keys. Writers: `setup()` (initial
-    /// resolution) and `import_identity`/`persist_current_identity`
-    /// (user-initiated key import).
+    /// No durable identity was admitted at boot; the recovery UI must import it.
     pub identity_lost: AtomicBool,
+    /// Recovery occurred in this process. Import may persist the exact owner,
+    /// but only a new process may admit it and re-enable effects or signing.
+    pub relaunch_required: AtomicBool,
     /// Serializes runtime identity mutations (`import_identity` and
     /// `persist_current_identity`) so a stale ephemeral key can never overwrite
     /// a newer imported key during concurrent calls. Deliberately separate from
@@ -105,18 +103,20 @@ pub struct AppState {
     /// Cached ACP session config from running agents, keyed by canonical
     /// `(agent pubkey, relay URL)` runtime identity.
     /// Populated when the harness emits `session_config_captured` observer events.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub session_config_cache: Mutex<HashMap<ManagedAgentRuntimeKey, SessionConfigCache>>,
     /// IOKit power assertion state — prevents idle sleep while agents run.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub prevent_sleep: Arc<Mutex<crate::prevent_sleep::PreventSleepState>>,
     /// In-process mesh-llm node started by Buzz Desktop.
-    #[cfg(feature = "mesh-llm")]
+    #[cfg(all(feature = "mesh-llm", not(feature = "local-owner-profile")))]
     pub mesh_llm_runtime: AsyncMutex<Option<crate::mesh_llm::DesktopMeshRuntime>>,
-    #[cfg(feature = "mesh-llm")]
+    #[cfg(all(feature = "mesh-llm", not(feature = "local-owner-profile")))]
     pub mesh_recovery: crate::mesh_llm::MeshRecoveryState,
     /// Runtime-owned shared-compute coordinator. It publishes member-signed
     /// discovery status and reconciles MeshLLM's admission roster; MeshLLM
     /// itself owns direct QUIC/iroh connection establishment.
-    #[cfg(feature = "mesh-llm")]
+    #[cfg(all(feature = "mesh-llm", not(feature = "local-owner-profile")))]
     pub mesh_coordinator: AsyncMutex<Option<crate::mesh_llm::MeshCoordinator>>,
     /// `(creator_pubkey_hex, channel_id)` pairs for channels the *named*
     /// identity created via `create_channel` and has not yet observed its own
@@ -132,6 +132,7 @@ pub struct AppState {
     /// kind:39002 is observed for the current identity, keeping the set
     /// bounded and letting a later leave correctly flip the channel back to
     /// `is_member=false`.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub pending_owned_channels: Mutex<std::collections::HashSet<(String, String)>>,
 }
 
@@ -157,84 +158,14 @@ fn identity_from_env() -> Option<Keys> {
     }
 }
 
-/// Build the no-redirect HTTP client used for authenticated relay media
-/// fetches (download / copy).
-///
-/// This client is a security boundary, not a convenience: it carries a minted
-/// media `Authorization` header, so it MUST NOT follow redirects. A relay 3xx
-/// to an off-origin or private host would otherwise forward that header across
-/// origins (a redirect-hop SSRF). `redirect::Policy::none()` returns the 3xx
-/// verbatim so the caller can reject it.
-///
-/// Returned as a `Result` so the fail-closed invariant is testable — callers
-/// must never substitute a redirect-following client on build failure. Shares
-/// the localhost `resolve`/pool config with the app-wide `http_client`.
-pub fn build_media_fetch_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .resolve("localhost", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
-        .pool_idle_timeout(std::time::Duration::from_secs(10))
-        .pool_max_idle_per_host(1)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-}
-
-pub fn build_app_state() -> AppState {
-    // Env var takes precedence (dev/CI). If absent, resolve_persisted_identity()
-    // in setup() will replace the ephemeral placeholder with a persisted key.
-    let (keys, identity_storage) = match identity_from_env() {
-        Some(keys) => {
-            eprintln!(
-                "buzz-desktop: configured identity pubkey {}",
-                keys.public_key().to_hex()
-            );
-            (keys, IdentityStorage::Environment)
-        }
-        None => (Keys::generate(), IdentityStorage::Ephemeral),
-    };
-
-    AppState {
-        keys: Mutex::new(keys),
-        identity_storage: AtomicU8::new(identity_storage as u8),
-        http_client: reqwest::Client::builder()
-            .resolve("localhost", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
-            .pool_idle_timeout(std::time::Duration::from_secs(10))
-            .pool_max_idle_per_host(1)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new()),
-        media_fetch_client: build_media_fetch_client().expect(
-            "media_fetch_client must build with redirect::Policy::none(); a \
-             redirect-following fallback would forward the minted media auth \
-             header across origins (redirect-hop SSRF)",
-        ),
-        relay_url_override: Mutex::new(None),
-        managed_agent_restore_pending: AtomicBool::new(false),
-        managed_agent_profile_reconcile_enabled: AtomicBool::new(true),
-        shutdown_started: AtomicBool::new(false),
-        managed_agent_runtime_transition: Mutex::new(()),
-        identity_mutation: Mutex::new(()),
-        managed_agents_store_lock: Mutex::new(()),
-        channel_templates_store_lock: Mutex::new(()),
-        managed_agent_processes: Mutex::new(HashMap::new()),
-        session_config_cache: Mutex::new(HashMap::new()),
-        huddle_state: Mutex::new(HuddleState::default()),
-        huddle_audio: Default::default(),
-        app_handle: Mutex::new(None),
-        media_proxy_port: AtomicU16::new(0),
-        prevent_sleep: Arc::new(Mutex::new(
-            crate::prevent_sleep::PreventSleepState::default(),
-        )),
-        keyring_locked: AtomicBool::new(false),
-        identity_lost: AtomicBool::new(false),
-        reset_failed: AtomicBool::new(false),
-        #[cfg(feature = "mesh-llm")]
-        mesh_llm_runtime: AsyncMutex::new(None),
-        #[cfg(feature = "mesh-llm")]
-        mesh_recovery: crate::mesh_llm::MeshRecoveryState::default(),
-        #[cfg(feature = "mesh-llm")]
-        mesh_coordinator: AsyncMutex::new(None),
-        pending_owned_channels: Mutex::new(std::collections::HashSet::new()),
-    }
-}
+#[path = "app_state_boot.rs"]
+pub(crate) mod boot;
+#[path = "app_state_local_owner.rs"]
+mod local_owner_identity;
+pub use boot::build_app_state;
+pub(crate) use local_owner_identity::persist_local_owner_import;
+#[cfg(test)]
+use local_owner_identity::{persist_local_owner_keyring_only, resolve_local_owner_with_store};
 
 impl AppState {
     /// Lock the huddle state mutex, converting a poisoned-lock error to a String.
@@ -242,26 +173,31 @@ impl AppState {
     /// Convenience wrapper — replaces 15+ instances of
     /// `state.huddle_state.lock().map_err(|e| e.to_string())?` throughout the
     /// huddle module.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn huddle(&self) -> Result<std::sync::MutexGuard<'_, crate::huddle::HuddleState>, String> {
         self.huddle_state.lock().map_err(|e| e.to_string())
     }
 
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn get_session_cache(&self, key: &ManagedAgentRuntimeKey) -> Option<SessionConfigCache> {
         self.session_config_cache.lock().ok()?.get(key).cloned()
     }
 
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn put_session_cache(&self, key: ManagedAgentRuntimeKey, cache: SessionConfigCache) {
         if let Ok(mut map) = self.session_config_cache.lock() {
             map.insert(key, cache);
         }
     }
 
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn clear_agent_session_cache(&self, key: &ManagedAgentRuntimeKey) {
         if let Ok(mut map) = self.session_config_cache.lock() {
             map.remove(key);
         }
     }
 
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn clear_agent_session_caches(&self, pubkey: &str) {
         if let Ok(mut map) = self.session_config_cache.lock() {
             map.retain(|key, _| key.pubkey != pubkey);
@@ -270,6 +206,7 @@ impl AppState {
 
     /// Record that `channel_id` was just created by `creator_pubkey` and its
     /// kind:39002 owner membership has not yet been observed.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn mark_pending_owned_channel(&self, creator_pubkey: &str, channel_id: &str) {
         if let Ok(mut set) = self.pending_owned_channels.lock() {
             set.insert((creator_pubkey.to_string(), channel_id.to_string()));
@@ -279,6 +216,7 @@ impl AppState {
     /// Whether `channel_id` is still awaiting `my_pubkey`'s kind:39002 entry.
     /// Bound to `my_pubkey` so an in-process identity swap never inherits
     /// another identity's pending-owner entry for the same channel id.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn is_pending_owned_channel(&self, my_pubkey: &str, channel_id: &str) -> bool {
         self.pending_owned_channels
             .lock()
@@ -289,6 +227,7 @@ impl AppState {
     /// Drop the `(my_pubkey, channel_id)` entry from the pending-owner
     /// overlay once that identity's real kind:39002 membership has been
     /// observed.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn clear_pending_owned_channel(&self, my_pubkey: &str, channel_id: &str) {
         if let Ok(mut set) = self.pending_owned_channels.lock() {
             set.remove(&(my_pubkey.to_string(), channel_id.to_string()));
@@ -304,21 +243,7 @@ impl AppState {
     /// this instead of locking `state.keys` directly, so that recovery mode
     /// blocks publishing under an invalid or inaccessible identity.
     pub fn signing_keys(&self) -> Result<Keys, String> {
-        if self
-            .identity_lost
-            .load(std::sync::atomic::Ordering::Acquire)
-            || self
-                .keyring_locked
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err("identity is in recovery mode; event signing is disabled \
-                 until the identity is restored and Buzz is relaunched"
-                .to_string());
-        }
-        self.keys
-            .lock()
-            .map_err(|e| e.to_string())
-            .map(|k| k.clone())
+        local_owner_identity::signing_keys(self)
     }
 
     /// Emit the current huddle state to the frontend via Tauri event.
@@ -326,6 +251,7 @@ impl AppState {
     /// Acquires both locks (app_handle + huddle_state), clones a snapshot,
     /// releases both, then emits. Best-effort — no-op if either lock is
     /// poisoned or the app_handle hasn't been set yet.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn emit_huddle_state_changed(&self) {
         let app = match self.app_handle.lock() {
             Ok(guard) => guard.clone(),
@@ -340,11 +266,7 @@ impl AppState {
     }
 }
 
-/// Resolve the user's identity key from the app data directory and wire
-/// the resulting [`RecoveryState`] into `AppState`.
-///
-/// Priority: `BUZZ_PRIVATE_KEY` env var (already handled in `build_app_state`)
-/// → keyring → `{app_data_dir}/identity.key` file → generate + save.
+/// Resolve the user's identity key and wire its [`RecoveryState`] into `AppState`.
 ///
 /// On success, writes the resolved keys into `state.keys` (with the mutex)
 /// before storing the recovery flags (Release), so any thread that reads
@@ -356,10 +278,7 @@ impl AppState {
 /// but inaccessible this boot). Both states boot with an ephemeral key; the
 /// frontend shows different recovery screens for each.
 pub fn resolve_persisted_identity(app: &AppHandle, state: &AppState) -> Result<(), String> {
-    // Only skip file-based resolution if the env var was present AND parsed
-    // successfully. A malformed env var should fall through to the persisted
-    // key rather than leaving the app on an ephemeral identity.
-    if identity_from_env().is_some() {
+    if local_owner_identity::env_identity_supersedes_persisted() {
         return Ok(());
     }
 
@@ -385,6 +304,11 @@ pub fn resolve_persisted_identity(app: &AppHandle, state: &AppState) -> Result<(
         resolved.recovery == RecoveryState::KeyringLocked,
         std::sync::atomic::Ordering::Release,
     );
+    if crate::local_owner_profile::profile_active() && resolved.recovery != RecoveryState::None {
+        state
+            .relaunch_required
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     Ok(())
 }
 
@@ -408,6 +332,7 @@ const MIGRATION_MARKER_NAME: &str = "identity.migrated";
 trait IdentityKeyStore {
     fn probe(&self, name: &str) -> crate::secret_store::KeyringProbe;
     fn load(&self, name: &str) -> Result<Option<String>, String>;
+    fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String>;
     fn store(&self, name: &str, value: &str) -> Result<(), String>;
     fn delete(&self, name: &str) -> Result<(), String>;
     /// Verify that `key` holds `expected` by reading directly from the OS
@@ -423,6 +348,9 @@ impl IdentityKeyStore for crate::secret_store::SecretStore {
     }
     fn load(&self, name: &str) -> Result<Option<String>, String> {
         crate::secret_store::SecretStore::load(self, name)
+    }
+    fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String> {
+        crate::secret_store::SecretStore::load_all_readonly(self)
     }
     fn store(&self, name: &str, value: &str) -> Result<(), String> {
         crate::secret_store::SecretStore::store(self, name, value)
@@ -446,6 +374,10 @@ impl IdentityKeyStore for crate::secret_store::SecretStore {
 /// key.
 fn load_or_create_identity(data_dir: &std::path::Path) -> Result<ResolvedIdentity, String> {
     let legacy_path = data_dir.join("identity.key");
+
+    if let Some(resolved) = local_owner_identity::resolve_if_active(&legacy_path, data_dir)? {
+        return Ok(resolved);
+    }
 
     // No keyring available in this build: the `0o600` file is the only store.
     if !cfg!(feature = "system-keyring") {

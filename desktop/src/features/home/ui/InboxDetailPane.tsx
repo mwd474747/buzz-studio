@@ -18,6 +18,7 @@ import { getProjectInboxReference } from "@/features/home/lib/projectInbox";
 import { ProjectInboxDetail } from "@/features/home/ui/ProjectInboxDetail";
 import { ChannelMembersBar } from "@/features/channels/ui/ChannelMembersBar";
 import { useCommunities } from "@/features/communities/useCommunities";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { formatInboxTypeLabel } from "@/features/home/lib/inbox";
 import { hasInboxThreadContext } from "@/features/home/lib/inboxViewHelpers";
 import {
@@ -161,6 +162,7 @@ function InboxMessageDetailPane({
 }: InboxDetailPaneProps) {
   const detailPaneRef = React.useRef<HTMLElement | null>(null);
   const { activeCommunity } = useCommunities();
+  const legacySurfacesEnabled = useLocalOwnerPolicy() === "inactive";
   // Refs for the shared anchored-scroll hook's container and content roots.
   const scrollContainerRef = React.useRef<HTMLDivElement | null>(null);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -521,7 +523,7 @@ function InboxMessageDetailPane({
                       <TooltipContent>{openContextLabel}</TooltipContent>
                     </Tooltip>
                   ) : null}
-                  {channel ? (
+                  {channel && legacySurfacesEnabled ? (
                     <ChannelMembersBar
                       channel={channel}
                       currentPubkey={currentPubkey}
@@ -679,7 +681,7 @@ function InboxMessageDetailPane({
         </div>
       </div>
 
-      {channel ? (
+      {channel && legacySurfacesEnabled ? (
         <React.Suspense fallback={null}>
           <MembersSidebar
             channel={channel}

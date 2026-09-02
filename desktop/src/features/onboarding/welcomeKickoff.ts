@@ -491,14 +491,17 @@ export function useWelcomeKickoff(
   activeChannel: Channel | null,
   channelEvents: readonly RelayEvent[],
   onKickoffOpenerPosted?: (eventId: string) => void,
+  enabled = true,
 ) {
   const queryClient = useQueryClient();
   const { activeCommunity } = useCommunities();
-  const runtimesQuery = useAcpRuntimesQuery();
-  const managedAgentsQuery = useManagedAgentsQuery();
-  const { globalConfig, isLoading: configLoading } = useGlobalAgentConfig();
+  const runtimesQuery = useAcpRuntimesQuery({ enabled });
+  const managedAgentsQuery = useManagedAgentsQuery({ enabled });
+  const { globalConfig, isLoading: configLoading } = useGlobalAgentConfig({
+    enabled,
+  });
   const channelId = activeChannel?.id ?? null;
-  const isActiveWelcome = isWelcomeChannel(activeChannel);
+  const isActiveWelcome = enabled && isWelcomeChannel(activeChannel);
   const focusedWelcomeChannelRef = React.useRef<string | null>(null);
   focusedWelcomeChannelRef.current = isActiveWelcome ? channelId : null;
   // Watch the opener's thread subtree directly so teammate intro replies are

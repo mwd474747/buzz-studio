@@ -20,6 +20,7 @@ import { ensureWelcomeCanvas } from "@/features/onboarding/welcomeCanvas";
 import { ensureWelcomeTeam } from "@/features/onboarding/welcomeGuide";
 import { useProfileQuery } from "@/features/profile/hooks";
 import { useCommunities } from "@/features/communities/useCommunities";
+import type { LocalOwnerPolicyStatus } from "@/features/onboarding/useLocalOwnerPolicy";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel } from "@/shared/api/types";
 import {
@@ -467,7 +468,10 @@ export function useFirstRunOnboardingGate({
   };
 }
 
-export function useAppOnboardingState(isSharedIdentity: boolean) {
+export function useAppOnboardingState(
+  isSharedIdentity: boolean,
+  localOwnerPolicy: LocalOwnerPolicyStatus = "inactive",
+) {
   const queryClient = useQueryClient();
   const { activeCommunity } = useCommunities();
   const identityQuery = useIdentityQuery();
@@ -484,6 +488,7 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
   // the session cannot access it. No in-app recovery is possible; the user
   // must unlock the keyring externally and relaunch. Mutually exclusive with lost.
   const identityLocked = identity?.locked === true;
+  const nativeRelaunchRequired = identity?.relaunchRequired === true;
   // Boot-time Phase 2 reset failed — wipe was attempted but verification failed.
   // The sentinel is preserved so the next relaunch retries automatically.
   const identityResetFailed = identity?.resetFailed === true;
@@ -505,7 +510,10 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
   }, [identityLocked]);
 
   const profileQuery = useProfileQuery(
-    !identityLost && !identityLocked && identityQuery.status === "success",
+    localOwnerPolicy === "inactive" &&
+      !identityLost &&
+      !identityLocked &&
+      identityQuery.status === "success",
   );
   const onboardingGate = useFirstRunOnboardingGate({
     currentPubkey,
@@ -523,6 +531,9 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
   );
   const requestStarterChannels = React.useCallback(
     (focus: boolean): Promise<ChannelInitResult> => {
+      if (localOwnerPolicy !== "inactive") {
+        return Promise.resolve({ ok: true });
+      }
       if (!currentPubkey || !starterChannelsCommunityScope) {
         return Promise.resolve({ ok: true });
       }
@@ -572,12 +583,18 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
       );
       return promise;
     },
-    [currentPubkey, queryClient, starterChannelsCommunityScope],
+    [
+      currentPubkey,
+      localOwnerPolicy,
+      queryClient,
+      starterChannelsCommunityScope,
+    ],
   );
 
   React.useEffect(() => {
     if (
       onboardingGate.stage !== "ready" ||
+      localOwnerPolicy !== "inactive" ||
       !currentPubkey ||
       !starterChannelsCommunityScope ||
       !readOnboardingCompletion(currentPubkey) ||
@@ -590,6 +607,7 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
   }, [
     currentPubkey,
     onboardingGate.stage,
+    localOwnerPolicy,
     requestStarterChannels,
     starterChannelsCommunityScope,
   ]);
@@ -658,7 +676,9 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
   // pending-event flush) were skipped for the ephemeral key and cannot restart
   // in-process, so nothing else can proceed until the app restarts.
   const relaunchRequired =
-    ((bootedLost && !identityLost) || (bootedLocked && !identityLocked)) &&
+    (nativeRelaunchRequired ||
+      (bootedLost && !identityLost) ||
+      (bootedLocked && !identityLocked)) &&
     identityQuery.status === "success";
 
   return {
@@ -675,8 +695,18 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
           ? ("keyring-locked" as const)
           : relaunchRequired
             ? ("relaunch-required" as const)
-            : isCompletingStarterSetup
+            : localOwnerPolicy === "loading" ||
+                localOwnerPolicy === "unavailable"
               ? ("blocking" as const)
-              : onboardingGate.stage,
+              : localOwnerPolicy === "active"
+                ? identityQuery.status === "success" &&
+                  currentPubkey &&
+                  !identityLost &&
+                  !identityLocked
+                  ? ("ready" as const)
+                  : ("blocking" as const)
+                : isCompletingStarterSetup
+                  ? ("blocking" as const)
+                  : onboardingGate.stage,
   };
 }

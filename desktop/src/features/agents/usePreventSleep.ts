@@ -34,10 +34,12 @@ const PreventSleepContext = React.createContext<PreventSleepValue | null>(null);
 
 export function PreventSleepProvider({
   children,
+  enabled = true,
 }: {
   children: React.ReactNode;
+  enabled?: boolean;
 }) {
-  const value = usePreventSleepInternal();
+  const value = usePreventSleepInternal(enabled);
   return React.createElement(PreventSleepContext.Provider, { value }, children);
 }
 
@@ -51,9 +53,9 @@ export function usePreventSleepContext(): PreventSleepValue {
   return ctx;
 }
 
-function usePreventSleepInternal() {
+function usePreventSleepInternal(effectsEnabled: boolean) {
   const [enabled, setEnabledState] = React.useState(readPreference);
-  const { data: agents } = useManagedAgentsQuery();
+  const { data: agents } = useManagedAgentsQuery({ enabled: effectsEnabled });
 
   // Only local "running" agents need sleep prevention. Remote "deployed"
   // agents run on provider infrastructure and are unaffected by local sleep.
@@ -82,19 +84,21 @@ function usePreventSleepInternal() {
   }, []);
 
   React.useEffect(() => {
+    if (!effectsEnabled) return;
     void setPreventSleepActive(active);
-  }, [active]);
+  }, [active, effectsEnabled]);
   React.useEffect(() => {
+    if (!effectsEnabled) return;
     const unlisten = listen("prevent-sleep-expired", () => {
       setExpired(true);
     });
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [effectsEnabled]);
 
   React.useEffect(() => {
-    if (!enabled || !runningAgentPubkeyKey) return;
+    if (!effectsEnabled || !enabled || !runningAgentPubkeyKey) return;
 
     const observedPubkeys = runningAgentPubkeyKey.split(",");
     const tracker = createPreventSleepActivityTracker();
@@ -115,7 +119,7 @@ function usePreventSleepInternal() {
 
     observeActivity();
     return subscribeAgentObserverStore(observeActivity);
-  }, [enabled, expired, runningAgentPubkeyKey]);
+  }, [effectsEnabled, enabled, expired, runningAgentPubkeyKey]);
 
   return {
     enabled,

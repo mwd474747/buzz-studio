@@ -11,6 +11,8 @@
  * prevents one community's cached identity from bleeding into another.
  */
 
+import { fetchMediaBytes } from "@/shared/api/tauriMedia";
+
 const STORAGE_KEY_PREFIX = "buzz-self-profile.v1";
 
 /**
@@ -219,29 +221,58 @@ export function resolveAvatarDataUrl(
   return nextAvatarUrl === existing.avatarUrl ? existing.avatarDataUrl : null;
 }
 
+function avatarMime(bytes: Uint8Array): string | null {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.subarray(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  if (
+    bytes.length >= 6 &&
+    ["GIF87a", "GIF89a"].includes(String.fromCharCode(...bytes.subarray(0, 6)))
+  ) {
+    return "image/gif";
+  }
+  return null;
+}
+
 /**
- * Fetches an avatar from `avatarProxyUrl` and converts it to a base64 data URL.
- *
- * The caller should pass the `rewriteRelayUrl()`-proxied URL and invoke this
- * only immediately after a successful profile fetch — at that moment the relay
- * is known to be reachable, so the fetch has the best chance of succeeding.
- *
- * The data URL is capped at 256 KB to keep localStorage usage bounded across
- * communities and accounts. Returns null on ANY failure: network error, non-OK
- * response, wrong content-type, blob too large, or FileReader error.
+ * Fetches an avatar through the native, relay-pinned media reader and converts
+ * it to a bounded base64 data URL. The webview never contacts the relay or a
+ * localhost proxy directly.
  */
 export async function fetchAvatarDataUrl(
-  avatarProxyUrl: string,
+  avatarUrl: string,
 ): Promise<string | null> {
   try {
-    const response = await fetch(avatarProxyUrl);
-    if (!response.ok) return null;
-
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.startsWith("image/")) return null;
-
-    const blob = await response.blob();
-    if (blob.size > 256 * 1024) return null;
+    const bytes = await fetchMediaBytes(avatarUrl);
+    if (bytes.byteLength > 256 * 1024) return null;
+    const contentType = avatarMime(bytes);
+    if (contentType === null) return null;
+    const blob = new Blob([bytes], { type: contentType });
 
     return await new Promise<string | null>((resolve) => {
       const reader = new FileReader();

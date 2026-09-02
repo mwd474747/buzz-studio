@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import type { LocalOwnerProfileSummary } from "../../src/shared/api/tauriLocalOwner";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
 
@@ -159,6 +160,8 @@ type MockInstallRuntimeResult = {
 };
 
 type MockBridgeOptions = {
+  /** Compiled deployment profile returned by the native boot-policy command. */
+  localOwnerProfile?: LocalOwnerProfileSummary | null;
   ttsSettings?: {
     version: number;
     agentTextToSpeech: boolean;
@@ -425,6 +428,9 @@ type MockBridgeOptions = {
    * invoked. Drives the keyring-locked screen in tests.
    */
   identityLocked?: boolean;
+  /** Native recovery latch preserved across a webview reload until the app
+   * process is relaunched. */
+  identityRelaunchRequired?: boolean;
   /**
    * Pending community deep links seeded into the mocked Rust-side queue.
    * The frontend drains these on boot into onboarding or an editable Add

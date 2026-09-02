@@ -46,7 +46,7 @@ export function HuddleIndicator({
   onStart,
   startDisabled,
 }: HuddleIndicatorProps) {
-  const { joinHuddle, isStarting } = useHuddle();
+  const { available, joinHuddle, isStarting } = useHuddle();
   const queryClient = useQueryClient();
   const [activeHuddle, setActiveHuddle] = React.useState<ActiveHuddle | null>(
     null,
@@ -54,7 +54,7 @@ export function HuddleIndicator({
   const [isJoining, setIsJoining] = React.useState(false);
 
   React.useEffect(() => {
-    if (!channelId) return;
+    if (!available || !channelId) return;
 
     let disposed = false;
     let cleanup: (() => void) | null = null;
@@ -183,13 +183,14 @@ export function HuddleIndicator({
       cleanup?.();
       setActiveHuddle(null);
     };
-  }, [channelId]);
+  }, [available, channelId]);
 
   // When the local user ends/leaves a huddle, the backend transitions to idle
   // and emits huddle-state-changed. Clear the indicator immediately rather than
   // waiting for the relay's 48103 event (which may arrive late or not at all
   // if the relay connection tears down first).
   React.useEffect(() => {
+    if (!available) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
 
@@ -206,7 +207,9 @@ export function HuddleIndicator({
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [available]);
+
+  if (!available) return null;
 
   // No active huddle — render the start button (if onStart provided).
   if (!activeHuddle) {

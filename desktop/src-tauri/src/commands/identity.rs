@@ -1,13 +1,14 @@
-use nostr::{
-    nips::nip44, Event, EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32,
-};
+#[cfg(not(feature = "local-owner-profile"))]
+use nostr::Event;
+use nostr::{nips::nip44, EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32};
 use tauri::Manager;
 use tauri::State;
 
+#[cfg(not(feature = "local-owner-profile"))]
+use crate::nostr_bind;
 use crate::{
     app_state::AppState,
     models::IdentityInfo,
-    nostr_bind,
     relay::{self, relay_api_base_url_with_override, relay_ws_url_with_override},
 };
 
@@ -36,6 +37,9 @@ pub fn get_identity(state: State<'_, AppState>) -> Result<IdentityInfo, String> 
     let locked = state
         .keyring_locked
         .load(std::sync::atomic::Ordering::Acquire);
+    let relaunch_required = state
+        .relaunch_required
+        .load(std::sync::atomic::Ordering::Acquire);
     let reset_failed = state
         .reset_failed
         .load(std::sync::atomic::Ordering::Acquire);
@@ -46,6 +50,7 @@ pub fn get_identity(state: State<'_, AppState>) -> Result<IdentityInfo, String> 
         storage: state.identity_storage().as_str().to_string(),
         lost,
         locked,
+        relaunch_required,
         reset_failed,
     })
 }
@@ -57,7 +62,14 @@ pub fn get_default_relay_url() -> String {
 
 #[tauri::command]
 pub fn auto_connect_default_relay_enabled() -> bool {
-    option_env!("BUZZ_DESKTOP_BUILD_AUTO_CONNECT_DEFAULT_RELAY").is_some()
+    crate::local_owner_profile::profile_active()
+        || option_env!("BUZZ_DESKTOP_BUILD_AUTO_CONNECT_DEFAULT_RELAY").is_some()
+}
+
+#[tauri::command]
+pub fn get_local_owner_profile(
+) -> Result<Option<crate::local_owner_profile::LocalOwnerProfileSummary>, String> {
+    crate::local_owner_profile::summary()
 }
 
 #[cfg(test)]
@@ -78,6 +90,9 @@ mod auto_connect_default_relay_tests {
 
 #[tauri::command]
 pub fn is_shared_identity() -> bool {
+    if crate::local_owner_profile::profile_active() {
+        return false;
+    }
     std::env::var("BUZZ_SHARE_IDENTITY")
         .map(|v| v == "1")
         .unwrap_or(false)
@@ -98,6 +113,7 @@ pub fn get_relay_http_url(state: State<'_, AppState>) -> String {
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn get_media_proxy_port(state: State<'_, AppState>) -> u16 {
     state
         .media_proxy_port
@@ -112,6 +128,7 @@ pub async fn sign_event(
     tags: Vec<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    crate::local_owner_profile::require_webview_interaction_event(kind.into(), &content, &tags)?;
     let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -128,6 +145,7 @@ pub async fn sign_event(
         let event = builder
             .sign_with_keys(&keys)
             .map_err(|error| format!("sign failed: {error}"))?;
+        crate::local_owner_profile::require_webview_signed_event(&event)?;
 
         Ok(event.as_json())
     })
@@ -136,10 +154,12 @@ pub async fn sign_event(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn decrypt_observer_event(
     event_json: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    crate::local_owner_profile::deny_agent_activation("agent observer decryption")?;
     let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -162,11 +182,13 @@ pub async fn decrypt_observer_event(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_observer_control_event(
     agent_pubkey: String,
     payload: serde_json::Value,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    crate::local_owner_profile::deny_agent_activation("agent observer control")?;
     let keys = state.signing_keys()?;
     let agent_pubkey = PublicKey::from_hex(agent_pubkey.trim())
         .map_err(|error| format!("invalid agent pubkey: {error}"))?;
@@ -188,7 +210,9 @@ pub fn build_observer_control_event(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn get_nsec(state: State<'_, AppState>) -> Result<String, String> {
+    crate::local_owner_profile::deny_identity_export("private-key display")?;
     let keys = state.signing_keys()?;
     keys.secret_key()
         .to_bech32()
@@ -199,6 +223,7 @@ pub fn get_nsec(state: State<'_, AppState>) -> Result<String, String> {
 /// entropy). `words` is clamped to the range allowed by `key_backup`;
 /// `separator` joins the words (defaults to a space).
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn generate_backup_passphrase(
     words: Option<u32>,
     separator: Option<String>,
@@ -211,11 +236,13 @@ pub fn generate_backup_passphrase(
 
 /// Core of [`create_ncryptsec_backup`], factored so tests can drive it with a
 /// bare `AppState` + temp dir (and a fast scrypt tier) without an `AppHandle`.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn create_backup_with_log_n(
     state: &AppState,
     password: &str,
     log_n: u8,
 ) -> Result<String, String> {
+    crate::local_owner_profile::deny_identity_export("identity backup creation")?;
     if password.chars().count() < crate::key_backup::MIN_PASSPHRASE_LEN {
         return Err(format!(
             "passphrase must be at least {} characters",
@@ -240,6 +267,7 @@ pub(crate) fn create_backup_with_log_n(
 /// pubkey, and returns the `ncryptsec1…` string for the native save flow. The
 /// body runs under `identity_mutation`, so identity changes cannot race the KDF.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn create_ncryptsec_backup(
     password: String,
     app_handle: tauri::AppHandle,
@@ -255,12 +283,14 @@ pub async fn create_ncryptsec_backup(
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(not(feature = "local-owner-profile"))]
 pub struct BackupVerification {
     pub pubkey: String,
     pub npub: String,
     pub matches_current_identity: bool,
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn verify_ncryptsec_backup_inner(
     state: &AppState,
     ncryptsec: &str,
@@ -280,6 +310,7 @@ fn verify_ncryptsec_backup_inner(
 
 /// Decrypt and validate a NIP-49 backup without exposing its secret key.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn verify_ncryptsec_backup(
     ncryptsec: String,
     password: String,
@@ -301,10 +332,12 @@ pub async fn verify_ncryptsec_backup(
 /// Never mutates canonical app state. Returns the chosen path, or `None` when
 /// the user cancelled.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn save_ncryptsec_copy(
     ncryptsec: String,
     app_handle: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
+    crate::local_owner_profile::deny_identity_export("identity backup export")?;
     // Reject anything that is not a valid encrypted-key blob — this command
     // must not become a generic file writer.
     crate::key_backup::parse_ncryptsec(&ncryptsec)?;
@@ -338,7 +371,27 @@ pub async fn import_identity(
     password: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<IdentityInfo, String> {
+    const MAX_KEY_INPUT_BYTES: usize = 32 * 1024;
+    const MAX_PASSWORD_BYTES: usize = 4 * 1024;
+    if nsec.len() > MAX_KEY_INPUT_BYTES {
+        return Err("identity input is too large".to_string());
+    }
+    if password
+        .as_ref()
+        .is_some_and(|value| value.len() > MAX_PASSWORD_BYTES)
+    {
+        return Err("identity backup password is too large".to_string());
+    }
+
     tokio::task::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        crate::local_owner_profile::require_identity_recovery_import(&state)?;
+        let _mutation_guard = state.identity_mutation.lock().map_err(|e| e.to_string())?;
+        // The first importer may have completed while this call waited for the
+        // mutation lock. Re-check before any NIP-49 work so a queued replacement
+        // cannot spend memory or decrypt a secret in the admitted process.
+        crate::local_owner_profile::require_identity_recovery_import(&state)?;
+
         // NIP-49 backups require a passphrase and decrypt entirely in Rust.
         // Raw nsec/hex input follows the existing parser path unchanged.
         let password = password.map(zeroize::Zeroizing::new);
@@ -346,12 +399,7 @@ pub async fn import_identity(
             &nsec,
             password.as_ref().map(|value| value.as_str()),
         )?;
-
-        // Serialize against persist_current_identity: hold this guard for the
-        // full function body so a concurrent stale persist can't overwrite
-        // this import.
-        let state = app_handle.state::<AppState>();
-        let _mutation_guard = state.identity_mutation.lock().map_err(|e| e.to_string())?;
+        crate::local_owner_profile::require_owner(&keys.public_key().to_hex())?;
 
         let data_dir = app_handle
             .path()
@@ -361,12 +409,16 @@ pub async fn import_identity(
         let key_path = data_dir.join("identity.key");
 
         let (pubkey, storage) = commit_imported_identity(&state, &data_dir, keys, |keys| {
-            // Persist into the OS keyring first (store → read-back verify →
-            // marker → delete file). Falls back to the 0o600 file when the
-            // keyring is unavailable; returns Err only when both backends fail.
             let store =
                 crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
-            crate::app_state::persist_imported_identity(store, keys, &key_path, &data_dir)
+            if crate::local_owner_profile::profile_active() {
+                // The local-owner flavor is keyring-only. A locked or failed
+                // keyring keeps recovery active; it never enables signing from
+                // a plaintext fallback in this process.
+                crate::app_state::persist_local_owner_import(store, keys, &key_path, &data_dir)
+            } else {
+                crate::app_state::persist_imported_identity(store, keys, &key_path, &data_dir)
+            }
         })?;
 
         let pubkey_hex = pubkey.to_hex();
@@ -380,6 +432,9 @@ pub async fn import_identity(
             storage: storage.as_str().to_string(),
             lost: false,
             locked: false,
+            relaunch_required: state
+                .relaunch_required
+                .load(std::sync::atomic::Ordering::Acquire),
             reset_failed: false,
         })
     })
@@ -393,8 +448,9 @@ pub async fn import_identity(
 ///
 /// Ordering is the contract:
 ///
-/// 1. `persist` runs FIRST. If it fails (`Err` from both keyring and file
-///    fallback), nothing has changed — the previous identity stays live in
+/// 1. `persist` runs FIRST. Its caller-selected policy may allow the ordinary
+///    desktop's file fallback or require the local-owner OS keyring. If it
+///    fails, nothing has changed — the previous identity stays live in
 ///    memory AND its valid canonical `identity.ncryptsec` stays on disk.
 /// 2. Only after durable persistence do we swap `state.keys` and clear the
 ///    recovery flags.
@@ -409,7 +465,10 @@ fn commit_imported_identity(
     keys: nostr::Keys,
     persist: impl FnOnce(&nostr::Keys) -> Result<crate::app_state::IdentityStorage, String>,
 ) -> Result<(nostr::PublicKey, crate::app_state::IdentityStorage), String> {
-    // Capture the previous pubkey up front for post-commit cleanup.
+    #[cfg(feature = "local-owner-profile")]
+    let _ = data_dir;
+    crate::local_owner_profile::require_owner(&keys.public_key().to_hex())?;
+    #[cfg(not(feature = "local-owner-profile"))]
     let previous_pubkey = state.keys.lock().map_err(|e| e.to_string())?.public_key();
 
     let storage = persist(&keys)?;
@@ -424,11 +483,14 @@ fn commit_imported_identity(
         state.set_identity_storage(storage);
     }
 
-    // Clear both recovery flags — an import is valid in either lost or
-    // keyring-locked state and resolves both. In the locked case the
-    // keyring is unreachable, so the persist step already fell back to
-    // identity.key; on the next Unreachable boot the file is loaded
-    // directly and when the keyring returns the adoption path picks it up.
+    // Clear both recovery flags only after the selected persistence policy
+    // succeeded. In the local-owner flavor that means a verified OS-keyring
+    // round trip; plaintext fallback is never sufficient.
+    if crate::local_owner_profile::profile_active() {
+        state
+            .relaunch_required
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     state
         .identity_lost
         .store(false, std::sync::atomic::Ordering::Release);
@@ -436,9 +498,7 @@ fn commit_imported_identity(
         .keyring_locked
         .store(false, std::sync::atomic::Ordering::Release);
 
-    // Importing a different identity invalidates the app-managed backup: it
-    // encrypts the previous key and must not linger mislabeled. Best-effort
-    // per the ordering contract above.
+    #[cfg(not(feature = "local-owner-profile"))]
     if let Err(e) = crate::key_backup::cleanup_stale_backup(&previous_pubkey, &pubkey, data_dir) {
         eprintln!(
             "buzz-desktop: import committed, but stale key backup cleanup failed: {e}; \
@@ -463,10 +523,12 @@ fn commit_imported_identity(
 /// key once the keyring becomes reachable again. The correct action in locked
 /// state is to unlock the keyring and relaunch — not to adopt the ephemeral key.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn persist_current_identity(
     app_handle: tauri::AppHandle,
 ) -> Result<IdentityInfo, String> {
     tokio::task::spawn_blocking(move || {
+        crate::local_owner_profile::deny_identity_replacement("creating a new identity")?;
         let state = app_handle.state::<AppState>();
 
         // Acquire mutation lock before reading identity_lost so that a
@@ -513,6 +575,9 @@ pub async fn persist_current_identity(
             storage: storage.as_str().to_string(),
             lost: false,
             locked: false,
+            relaunch_required: state
+                .relaunch_required
+                .load(std::sync::atomic::Ordering::Acquire),
             reset_failed: false,
         })
     })
@@ -532,8 +597,10 @@ pub async fn persist_current_identity(
 /// Not available in shared-identity mode (`BUZZ_SHARE_IDENTITY=1`): the key
 /// comes from an env var, not the keychain, so wiping would have no effect and
 /// would be confusing.
+#[cfg(not(feature = "local-owner-profile"))]
 #[tauri::command]
 pub async fn sign_out(app: tauri::AppHandle) -> Result<(), String> {
+    crate::local_owner_profile::deny_identity_replacement("sign out and identity reset")?;
     if is_shared_identity() {
         return Err(
             "Sign out isn't available while BUZZ_SHARE_IDENTITY provides your identity. Unset BUZZ_SHARE_IDENTITY and BUZZ_PRIVATE_KEY, then relaunch to sign out."
@@ -560,10 +627,12 @@ pub async fn sign_out(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn nostr_bind_tag(name: &str, value: &str) -> Result<Tag, String> {
     Tag::parse(vec![name, value]).map_err(|error| format!("{name} tag failed: {error}"))
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn build_nostr_identity_binding_event(
     keys: &Keys,
     challenge_id: &str,
@@ -599,6 +668,7 @@ pub(crate) fn build_nostr_identity_binding_event(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn sign_nostr_identity_binding(
     challenge_id: String,
     nonce: String,
@@ -607,6 +677,7 @@ pub async fn sign_nostr_identity_binding(
     expires_at: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    crate::local_owner_profile::deny_direct_effect("external identity binding")?;
     nostr_bind::validate_signing_request(
         &challenge_id,
         &nonce,
@@ -615,11 +686,7 @@ pub async fn sign_nostr_identity_binding(
         &expires_at,
     )?;
 
-    let keys = state
-        .keys
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone();
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let event = build_nostr_identity_binding_event(
@@ -643,6 +710,7 @@ pub async fn create_auth_event(
     relay_url: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    crate::local_owner_profile::require_relay(&relay_url)?;
     let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -699,7 +767,7 @@ pub async fn nip44_decrypt_from_self(
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 mod nostr_identity_binding_tests {
     use super::build_nostr_identity_binding_event;
     use crate::nostr_bind;
@@ -784,6 +852,34 @@ mod nostr_identity_binding_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 #[path = "identity_key_backup_tests.rs"]
 mod identity_key_backup_tests;
+
+#[cfg(test)]
+mod local_owner_import_tests {
+    use super::commit_imported_identity;
+    use crate::app_state::{build_app_state, IdentityStorage};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn recovery_import_requires_a_new_process_before_effects_resume() {
+        let state = build_app_state();
+        state.identity_lost.store(true, Ordering::Release);
+        state.relaunch_required.store(true, Ordering::Release);
+        let dir = tempfile::tempdir().unwrap();
+        let keys = nostr::Keys::generate();
+
+        commit_imported_identity(&state, dir.path(), keys, |_| {
+            Ok(IdentityStorage::SystemKeyring)
+        })
+        .unwrap();
+
+        assert!(!state.identity_lost.load(Ordering::Acquire));
+        assert!(state.relaunch_required.load(Ordering::Acquire));
+        crate::local_owner_profile::with_test_profile_active(|| {
+            assert!(crate::local_owner_profile::recovery_active(&state));
+            assert!(state.signing_keys().unwrap_err().contains("relaunch"));
+        });
+    }
+}

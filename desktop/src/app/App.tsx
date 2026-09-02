@@ -22,6 +22,7 @@ import { useReloadShortcut } from "@/app/useReloadShortcut";
 import { KnownAgentPubkeysProvider } from "@/features/agents/useKnownAgentPubkeys";
 import { useAppOnboardingState } from "@/features/onboarding/hooks";
 import { useMachineOnboardingState } from "@/features/onboarding/machineOnboarding";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import {
   type FirstCommunityPage,
   useCommunityOnboarding,
@@ -241,7 +242,8 @@ function AppReady({
   isSharedIdentity: boolean;
   isCommunitySwitch: boolean;
 }) {
-  const onboarding = useAppOnboardingState(isSharedIdentity);
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const onboarding = useAppOnboardingState(isSharedIdentity, localOwnerPolicy);
 
   if (onboarding.stage === "reset-failed") {
     return <ResetFailedScreen />;
@@ -279,7 +281,7 @@ function AppReady({
         })
       }
     >
-      <KnownAgentPubkeysProvider>
+      <KnownAgentPubkeysProvider enabled={localOwnerPolicy === "inactive"}>
         <RouterProvider router={router} />
       </KnownAgentPubkeysProvider>
     </EncryptedBackupProvider>
@@ -594,17 +596,27 @@ function CommunityApp({
 
 function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
   const { activeCommunity } = useCommunities();
+  const localOwnerPolicy = useLocalOwnerPolicy();
   const communityOnboarding = useCommunityOnboarding();
   const machine = useMachineOnboardingState({
     activeCommunityPubkey: activeCommunity
       ? (activeCommunity.pubkey ?? null)
       : undefined,
     isSharedIdentity: sharedIdentity,
+    localOwnerPolicy,
   });
   const [machineInitialPage, setMachineInitialPage] =
     useState<MachineOnboardingPage>();
   const [postOnboardingNav, setPostOnboardingNav] =
     useState<PostOnboardingNavigation | null>(null);
+  const obsoleteCommunityTransaction =
+    localOwnerPolicy === "active" && communityOnboarding.transaction !== null;
+
+  useEffect(() => {
+    if (obsoleteCommunityTransaction) {
+      communityOnboarding.clear();
+    }
+  }, [communityOnboarding.clear, obsoleteCommunityTransaction]);
 
   const reopenMachineConfig = useCallback(() => {
     setMachineInitialPage("config");
@@ -641,15 +653,22 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
   }, [machine.stage, postOnboardingNav]);
 
   const openAddCommunity = useCallback(
-    (payload: AddCommunityDeepLinkPayload & { requestId: string }) =>
-      activeCommunity
+    (payload: AddCommunityDeepLinkPayload & { requestId: string }) => {
+      if (localOwnerPolicy !== "inactive") {
+        console.warn(
+          "Local-owner profile ignored an alternate-community deep link",
+        );
+        return false;
+      }
+      return activeCommunity
         ? requestAddCommunityPrefill(payload)
         : communityOnboarding.start({
             source: "add-community",
             relayUrl: payload.relayUrl,
             communityName: payload.name,
-          }),
-    [activeCommunity, communityOnboarding.start],
+          });
+    },
+    [activeCommunity, communityOnboarding.start, localOwnerPolicy],
   );
 
   // Deep links are captured here — above the machine-onboarding gate — not in
@@ -658,6 +677,9 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
   // fresh install is acknowledged on screen while the identity steps are
   // still pending, and survives a relaunch in between.
   useEffect(() => {
+    if (localOwnerPolicy !== "inactive") {
+      return;
+    }
     const unlisten = listenForDeepLinks({
       startCommunityOnboarding: communityOnboarding.start,
       openAddCommunity,
@@ -666,13 +688,17 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, [communityOnboarding.start, openAddCommunity]);
+  }, [communityOnboarding.start, localOwnerPolicy, openAddCommunity]);
 
   if (machine.stage === "reset-failed") return <ResetFailedScreen />;
   if (machine.stage === "keyring-locked") return <KeyringLockedScreen />;
   if (machine.stage === "relaunch-required") return <RelaunchRequiredScreen />;
   if (machine.stage === "blocking") return <AppLoadingGate />;
   if (machine.stage === "ready") {
+    // The compiled profile has exactly one community. Never mount the generic
+    // transaction consumer with persisted add/join state: clearing that old
+    // record is retirement, not an alternate-community recovery workflow.
+    if (obsoleteCommunityTransaction) return <AppLoadingGate />;
     return (
       <CommunityApp
         currentPubkey={machine.currentPubkey}

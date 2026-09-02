@@ -19,6 +19,7 @@ import { cn } from "@/shared/lib/cn";
 
 type SidebarProfileCardProps = {
   activeCommunity: Community | null;
+  communityControlsEnabled?: boolean;
   isPresencePending?: boolean;
   onOpenAddCommunity: () => void;
   onOpenSettings: (section?: SettingsSection) => void;
@@ -41,6 +42,7 @@ type SidebarProfileCardProps = {
 
 export function SidebarProfileCard({
   activeCommunity,
+  communityControlsEnabled = true,
   isPresencePending,
   onOpenAddCommunity,
   onOpenSettings,
@@ -162,23 +164,27 @@ export function SidebarProfileCard({
             userStatusEmoji={selfUserStatus?.emoji}
             userStatusText={selfUserStatus?.text}
             communitySwitcherSlot={
-              <CommunitySwitcher
-                activeCommunity={activeCommunity}
-                canInvite={canInvite}
-                onAddCommunity={() => {
-                  setProfilePopoverOpen(false);
-                  onOpenAddCommunity();
-                }}
-                onInvite={() => {
-                  setProfilePopoverOpen(false);
-                  onOpenSettings("community-members");
-                }}
-                onRemoveCommunity={onRemoveCommunity}
-                onSwitchCommunity={onSwitchCommunity}
-                onUpdateCommunity={onUpdateCommunity}
-                variant="profile-menu"
-                communities={communities}
-              />
+              communityControlsEnabled ? (
+                <CommunitySwitcher
+                  activeCommunity={activeCommunity}
+                  canInvite={canInvite}
+                  onAddCommunity={() => {
+                    setProfilePopoverOpen(false);
+                    onOpenAddCommunity();
+                  }}
+                  onInvite={() => {
+                    setProfilePopoverOpen(false);
+                    onOpenSettings("community-members");
+                  }}
+                  onRemoveCommunity={onRemoveCommunity}
+                  onSwitchCommunity={onSwitchCommunity}
+                  onUpdateCommunity={onUpdateCommunity}
+                  variant="profile-menu"
+                  communities={communities}
+                />
+              ) : (
+                readonlyCommunityLabel
+              )
             }
           >
             <button

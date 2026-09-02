@@ -5,6 +5,7 @@ import {
   useRelayAgentsQuery,
   useTeamsQuery,
 } from "@/features/agents/hooks";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import {
   useChannelMembersQuery,
   useChannelsQuery,
@@ -93,7 +94,6 @@ export function useMentions(
   const mentionMapRef = React.useRef<Map<string, string>>(new Map());
   const personaMentionMapRef = React.useRef<Map<string, string>>(new Map());
   const previousSuggestionsRef = React.useRef<MentionSuggestion[]>([]);
-  void options?.channelType;
   const mentionSearchQuery = mentionQuery?.trim() ?? "";
   const canSearchGlobalPeople = mentionSearchQuery.length > 0;
   const identityQuery = useIdentityQuery();
@@ -103,11 +103,16 @@ export function useMentions(
   const membersQuery = useChannelMembersQuery(channelId);
   const members = externalMembers ?? membersQuery.data;
   const isArchivedDiscovery = useIsArchivedPredicate();
-  const managedAgentsQuery = useManagedAgentsQuery();
-  const relayAgentsQuery = useRelayAgentsQuery();
+  const agentMentionsEnabled = useLocalOwnerPolicy() === "inactive";
+  const managedAgentsQuery = useManagedAgentsQuery({
+    enabled: agentMentionsEnabled,
+  });
+  const relayAgentsQuery = useRelayAgentsQuery({
+    enabled: agentMentionsEnabled,
+  });
   const channelsQuery = useChannelsQuery();
-  const personasQuery = usePersonasQuery();
-  const teamsQuery = useTeamsQuery();
+  const personasQuery = usePersonasQuery({ enabled: agentMentionsEnabled });
+  const teamsQuery = useTeamsQuery({ enabled: agentMentionsEnabled });
   const managedAgentDirectoryReady =
     managedAgentsQuery.data !== undefined ||
     !managedAgentsQuery.isLoading ||
@@ -240,9 +245,9 @@ export function useMentions(
   );
   const mentionCandidates = React.useMemo<MentionCandidate[]>(() => {
     const candidatesByPubkey = new Map<string, MentionCandidate>();
-
     const addCandidate = (candidate: MentionCandidate & { pubkey: string }) => {
       const pubkey = normalizePubkey(candidate.pubkey);
+      if (!agentMentionsEnabled && candidate.isAgent) return;
       if (isArchivedDiscovery(pubkey)) {
         return;
       }
@@ -412,6 +417,7 @@ export function useMentions(
   }, [
     activePersonaById,
     activePersonas,
+    agentMentionsEnabled,
     userSearchResults,
     canSearchGlobalUsers,
     currentPubkey,
@@ -460,7 +466,6 @@ export function useMentions(
   const searchableNames = React.useMemo<string[]>(() => {
     const names: string[] = [];
     const seen = new Set<string>();
-
     for (const candidate of mentionCandidatesWithTeams) {
       for (const name of [
         candidate.displayName,
@@ -474,14 +479,12 @@ export function useMentions(
         }
       }
     }
-
     return names;
   }, [mentionCandidatesWithTeams]);
 
   const highlightNames = React.useMemo<string[]>(() => {
     const names: string[] = [];
     const seen = new Set<string>();
-
     for (const name of selectedMentionNames) {
       const trimmed = name.trim();
       if (trimmed && !seen.has(trimmed.toLowerCase())) {
@@ -489,14 +492,12 @@ export function useMentions(
         seen.add(trimmed.toLowerCase());
       }
     }
-
     return names;
   }, [selectedMentionNames]);
 
   const agentHighlightNames = React.useMemo<string[]>(() => {
     const names: string[] = [];
     const seen = new Set<string>();
-
     for (const name of selectedAgentMentionNames) {
       const trimmed = name.trim();
       if (trimmed && !seen.has(trimmed.toLowerCase())) {
@@ -504,7 +505,6 @@ export function useMentions(
         seen.add(trimmed.toLowerCase());
       }
     }
-
     return names;
   }, [selectedAgentMentionNames]);
 

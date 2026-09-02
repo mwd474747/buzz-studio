@@ -23,6 +23,7 @@ import { MembershipDenied } from "./MembershipDenied";
 import { NostrKeyImportForm } from "./NostrKeyImportForm";
 import { useCommunities } from "@/features/communities/useCommunities";
 import { CommunityChangeOverlay } from "@/features/communities/ui/CommunityChangeOverlay";
+import { useLocalOwnerPolicy } from "../useLocalOwnerPolicy";
 import {
   type OnboardingTransitionDirection,
   OnboardingSlideTransition,
@@ -186,6 +187,8 @@ export function OnboardingFlow({
   const [transitionDirection, setTransitionDirection] =
     React.useState<OnboardingTransitionDirection>("forward");
   const systemColorScheme = useSystemColorScheme();
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const identityReplacementAllowed = localOwnerPolicy === "inactive";
 
   const resetProfileSaveError = React.useCallback(() => {
     profileUpdateMutation.reset();
@@ -406,6 +409,12 @@ export function OnboardingFlow({
   // machinery (bootedLost + !identityLost) replace this flow with
   // RelaunchRequiredScreen. No navigation needed here.
   const handleLostModeBack = React.useCallback(async () => {
+    if (!identityReplacementAllowed) {
+      setPersistError(
+        "Identity replacement is unavailable. Re-import the existing owner key or relaunch Buzz.",
+      );
+      return;
+    }
     const confirmed = window.confirm(
       "This will create a new identity and abandon your previous key. This cannot be undone. Continue?",
     );
@@ -422,7 +431,7 @@ export function OnboardingFlow({
           : "Failed to create a new identity. Please try again.",
       );
     }
-  }, [queryClient]);
+  }, [identityReplacementAllowed, queryClient]);
 
   if (currentPage === "membership-denied") {
     return (
@@ -532,10 +541,11 @@ export function OnboardingFlow({
                         Re-import your key
                       </h1>
                       <p className="mt-5 text-sm leading-6 text-muted-foreground">
-                        Your identity is no longer in the system keyring.
-                        Re-import your nsec to restore it — Buzz will restart to
-                        finish recovery. Or go back to start a new identity with
-                        a fresh key.
+                        {localOwnerPolicy === "active"
+                          ? "This installation is pinned to its existing owner identity. Re-import the matching nsec to restore it; creating a replacement identity is disabled."
+                          : localOwnerPolicy !== "inactive"
+                            ? "Re-import your existing nsec to restore this identity. Identity replacement stays disabled until Buzz can confirm this installation's policy."
+                            : "Your identity is no longer in the system keyring. Re-import your nsec to restore it — Buzz will restart to finish recovery. Or go back to start a new identity with a fresh key."}
                       </p>
                     </>
                   ) : (
@@ -562,6 +572,7 @@ export function OnboardingFlow({
                   backLabel={identityLost ? "Start new identity" : undefined}
                   onBack={identityLost ? handleLostModeBack : showProfilePage}
                   onImport={importExistingKey}
+                  showBack={!identityLost || identityReplacementAllowed}
                 />
               </OnboardingSlideTransition>
             ) : (
