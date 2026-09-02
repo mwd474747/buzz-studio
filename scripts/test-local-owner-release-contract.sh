@@ -144,6 +144,13 @@ fi
 /usr/bin/grep -Fq \
   'assert_interaction_only_info_plist "$app_path/Contents/Info.plist"' \
   scripts/build-local-owner-macos.sh
+if [[ -e desktop/src-tauri/Info.plist || -L desktop/src-tauri/Info.plist ]]; then
+  echo "conventional Info.plist would be merged into the local-owner artifact" >&2
+  exit 1
+fi
+/usr/bin/jq -e \
+  '.bundle.macOS.infoPlist == "Info.standard.plist"' \
+  desktop/src-tauri/tauri.conf.json >/dev/null
 /usr/bin/jq -e '
   .bundle.macOS.entitlements == "Entitlements.local-owner.plist"
   and .bundle.macOS.infoPlist == "Info.local-owner.plist"
