@@ -152,20 +152,24 @@ Hermit's lazy tool download (each tool is fetched once on first invocation and
 cached thereafter). You can also run `just bootstrap` independently at any time;
 it is safe to re-run.
 
-`just setup` then starts Docker services (Postgres on `:5432`, Redis on `:6379`,
-Adminer on `:8082`, Keycloak on `:8180` for local OAuth/OIDC testing, MinIO on
-`:9000` for media storage, and Prometheus on `:9090` for metrics) and runs all
-pending database migrations.
+`just setup` then starts contributor Docker services (Postgres on `:5432`, Redis
+on `:6379`, Adminer on `:8082`, Keycloak on `:8180` for local OAuth/OIDC testing,
+MinIO on `:9000` for media storage) and runs pending database migrations.
+Prometheus is not part of this stack.
+
+Studio transport is the local Docker prod relay (`deploy/compose/compose.yml`)
+at `ws://localhost:3300`. `just setup` / `just relay` are contributor leftovers,
+not the advertised path. Pairing sidecar and ACP mention-fleet are not required
+boot paths.
 
 ### Running the Relay and Desktop App
 
 ```bash
-just dev   # starts the relay + desktop app in one command
+cd deploy/compose && cp .env.example .env && ./run.sh start
 ```
 
-`just dev` builds all agent tools, starts the relay (`ws://localhost:3000`) in
-the background, and launches the Tauri desktop app. The relay process is
-automatically killed when you quit the app or press Ctrl+C.
+`just dev` remains a cargo-run contributor recipe (`ws://localhost:3000`). It is
+not the studio transport and does not replace the `:3300` prod compose path.
 
 For a split-terminal workflow (relay logs visible separately from Vite output):
 

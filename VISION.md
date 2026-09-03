@@ -112,12 +112,6 @@ Voice, room lifecycle, and lifecycle events are wired. Recording and per-track p
 
 ---
 
-## Buzz Mesh
-
-Relay communities can pool opted-in member hardware into shared AI compute. Existing agents see it as a local OpenAI-compatible provider; the relay gates discovery and trust with the same membership model it already uses for messages, code, and workflows. Models too large for any single machine split across several. See [VISION_MESH.md](VISION_MESH.md) for the full compute-commons vision.
-
----
-
 ## Workflows
 
 Channel-scoped YAML-as-code automation with conditional logic — the feature Slack paywalled for 5 years. Message triggers, reaction triggers, scheduled runs, webhooks. Every step traced. Agents manage workflows through MCP tools.

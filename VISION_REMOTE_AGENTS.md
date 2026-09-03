@@ -30,7 +30,7 @@ This is not asceticism. It is what makes the body replaceable. A management plan
 
 Kubernetes is the first substrate, not the point. Deployment goes through a provider — a small, swappable binary the desktop discovers and interrogates — and the contract a provider must honor never mentions containers: preserve the agent's identity and fail closed with its key, converge to a single live instance no matter how deploys race, let presence describe conversational availability rather than substrate health, bound the instance's lifetime, and keep secrets out of configuration. A conformance suite pins those behaviors — it establishes that a provider honors the contract, not that arbitrary code is safe to hand a key; choosing a provider, like choosing a cluster, remains a trust decision you make deliberately.
 
-Get that contract right and the substrate becomes a detail: a cluster today; a VM, a PaaS, or something serverless-shaped tomorrow — and, on the horizon, the same community machines that already pool their idle GPUs into shared compute ([VISION_MESH.md](VISION_MESH.md)).
+Get that contract right and the substrate becomes a detail: a cluster today; a VM, a PaaS, or something serverless-shaped tomorrow. Federation / mesh rebuild is not a path on this fork.
 
 The body itself stays small because the runtime already is ([VISION_AGENT.md](VISION_AGENT.md)): a harness and an agent purpose-built to be read in an afternoon, packed into an image measured in megabytes. Small bodies are cheap to summon and cheap to discard — which is the whole lifecycle.
 

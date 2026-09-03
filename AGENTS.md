@@ -51,9 +51,7 @@ crates/
   buzz-dev-mcp        # Developer MCP server — shell + file-edit tools
   buzz-persona        # Agent persona packs
   buzz-workflow       # YAML-as-code workflow engine (evalexpr conditions)
-  # Clients + interop
-  buzz-pair-relay     # Ephemeral sidecar relay for NIP-AB device pairing
-  buzz-pairing-cli    # CLI for NIP-AB device pairing interop testing
+  # Clients + interop — pairing-code / phone-pair sidecar is not an advertised path
   git-sign-nostr      # Sign git objects with a Nostr key
   git-credential-nostr # Git credential helper for Nostr-authed push/fetch
   # Tooling + shared
@@ -76,15 +74,21 @@ scripts/              # Dev tooling
 
 ## Getting Started
 
+Studio transport is the local Docker prod relay (`deploy/compose/compose.yml`)
+at `ws://localhost:3300` / NIP-29. Existing `#local-dev` owner pin
+`ea840b3e14aceac2b09619de28aedda628e79fcb120dea462ed3ccc512875971` — do not
+remint. Desktop immutable-release work stays on PR #3. ACP mention-fleet,
+pairing sidecar, dual compose / Prometheus, and federation rebuild are not
+required boot paths.
+
 ```bash
-. ./bin/activate-hermit   # activate hermit toolchain (Rust, Node, etc.)
-cp .env.example .env      # configure local environment
-just setup                # install deps, run migrations
-just relay                # start relay at ws://localhost:3000
-just ci                   # run before any PR
+. ./bin/activate-hermit
+cd deploy/compose && cp .env.example .env && ./run.sh start
+just ci                   # contributor gate; not the studio transport
 ```
 
-See CONTRIBUTING.md for full setup details and dependency requirements.
+See CONTRIBUTING.md for contributor setup. `just setup` / `just relay` are
+cargo-run leftovers, not the advertised path.
 
 ---
 

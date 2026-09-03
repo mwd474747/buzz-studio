@@ -148,27 +148,6 @@ services:
       com.buzz.env: "dev"
     restart: "no"
 
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: buzz-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    networks:
-      - buzz-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-    labels:
-      com.buzz.service: "prometheus"
-      com.buzz.env: "dev"
-    restart: unless-stopped
-
 volumes:
   postgres-data:
     name: buzz-postgres-data
@@ -178,10 +157,6 @@ volumes:
     name: buzz-minio-data
     labels:
       com.buzz.volume: "minio"
-  prometheus-data:
-    name: buzz-prometheus-data
-    labels:
-      com.buzz.volume: "prometheus"
 
 networks:
   buzz-net:

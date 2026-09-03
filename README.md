@@ -101,7 +101,7 @@ Agents are part of the room, not haunted cron jobs.
 |---|---|---|
 | Relay, channels, threads, DMs, canvases, media, search, audit log | Mobile clients (iOS + Android, Flutter) | Web-of-trust reputation across relays |
 | Desktop app (Tauri + React) | Workflow approval gates (infra exists, glue still drying) | Push notifications |
-| `buzz-cli` (agent-first, JSON in / JSON out) + ACP harness (Goose, Codex, Claude Code) | Huddle lifecycle events | Culture features |
+| `buzz-cli` (agent-first, JSON in / JSON out) | Huddle lifecycle events | Culture features |
 | YAML workflows: message / reaction / schedule / webhook triggers | | |
 | Git events (NIP-34: patches, repo announcements, status) | | |
 | Git hosting backend | | |
@@ -110,45 +110,18 @@ Agents are part of the room, not haunted cron jobs.
 
 ---
 
-## Getting started
+## Current path (this fork)
 
-New to Buzz? Pick the path that matches you.
+This tree is a local-owner Buzz studio. The current path is leftover-subtracted:
 
-### I just want to try the app
-
-Grab a packaged build from the [latest release](https://github.com/block/buzz/releases/latest):
-
-| Platform | File |
-|---|---|
-| macOS (Apple Silicon) | `Buzz_<version>_aarch64.dmg` |
-| macOS (Intel) | `Buzz_<version>_x64.dmg` |
-| Linux (x86_64) | `Buzz_<version>_amd64.AppImage` or `Buzz_<version>_amd64.deb` |
-| Windows (x64) | `Buzz_<version>_x64-setup_alpha-unsigned.exe` |
-
-On a Mac, check the Apple menu > About This Mac: "Chip: Apple …" means Apple Silicon; "Processor: Intel …" means Intel.
-
-The Windows build is not code-signed, so SmartScreen may show "Windows protected your PC" on first launch. If available, click **More info**, then **Run anyway**.
-
-
-By default the app connects to `ws://localhost:3000`. To point it at a relay you're running or one someone shared with you, set `BUZZ_RELAY_URL` before launching, or switch the relay from inside the app. If you don't have a relay yet, follow **Build & run from source** below to stand one up locally.
-
-### I want my own hosted relay
-
-To run a relay for your team without managing servers, you can deploy one to Railway in a click:
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/buzz-relay-block)
-
-See [here](https://engineering.block.xyz/blog/run-your-own-buzz-relay) for details.
-
-### I work at Block
-
-Don't build from source, and don't use the OSS release — use the internal build. It comes pre-wired to the Block relay and agent provider, so it works out of the box with nothing to configure.
-
-Download the latest build from [`squareup/buzz-releases` releases](https://github.com/squareup/buzz-releases/releases/latest) and install it.
+- **Transport:** local Docker prod relay in [`deploy/compose/`](deploy/compose/README.md) (`compose.yml` only) at `ws://localhost:3300` / NIP-29 room. Do not treat root `docker-compose.yml` or a Prometheus overlay as required.
+- **Identity:** existing `#local-dev` owner pin, full pubkey `ea840b3e14aceac2b09619de28aedda628e79fcb120dea462ed3ccc512875971` (raw digest `af3cd8c1007e504b9d0385c0090395f2a4fecef56e34fd91e66301093583637e`). Do not remint. Do not use the 8-hex prefix as identity. `pin_is_compiled` stays compiled-in.
+- **Desktop:** bundle id `xyz.block.buzz.app`. The immutable-release lane is PR #3 (`cursor/desktop-release-lane-local-dev-6319`, Stage 2 HOLD). Do not add Team ID, install, or sign from this tree. Vite is not truth. `just release-desktop` / `scripts/desktop_release.py` stay the only packager.
+- **Not this path:** writer / foundry / ACP mention-fleet as required boot; pairing-code / phone-pair sidecar; dual compose / Prometheus / A-01E activation; a second packager; federation rebuild inside Buzz; unsigned `live/` as production.
 
 ### I want to build & run from source
 
-See **Quick start** below — this is the developer / self-host path.
+See **Quick start** below — Docker prod relay on `:3300` is the transport.
 
 ---
 
@@ -158,26 +131,17 @@ You'll need [Docker](https://docs.docker.com/get-docker/) and [Hermit](https://c
 
 **Once:**
 ```bash
-git clone https://github.com/block/buzz.git && cd buzz
-. ./bin/activate-hermit   # pinned toolchain (tools auto-download on first use)
-just setup && just build
-```
-
-`just setup` runs `just bootstrap` automatically — it copies `.env.example` to `.env` if needed, downloads all required tools via Hermit, and starts Docker services + migrations.
-
-**Every day:**
-```bash
+git clone https://github.com/mwd474747/buzz-studio.git && cd buzz-studio
 . ./bin/activate-hermit
-just dev   # starts the relay + desktop app together
+cd deploy/compose
+cp .env.example .env
+# keep RELAY_OWNER_PUBKEY as the existing #local-dev pin; fill remaining CHANGE_ME secrets
+./run.sh start
 ```
 
-Relay on `ws://localhost:3000`. Desktop app pops up. You're in.
+Relay transport: `ws://localhost:3300`. Desktop immutable-release work stays on PR #3. Do not remint. Do not pair a phone sidecar. Do not boot via ACP mention-fleet.
 
-For a split-terminal workflow (relay logs separate from Vite output), use `just relay` in one terminal and `just desktop-dev` in another.
-
-Want a single-node / VPS relay instead of the local-dev stack? Use the production Compose bundle in [`deploy/compose/`](deploy/compose/README.md) (`docker compose` + Postgres, Redis, MinIO, optional Caddy/TLS). The root [`docker-compose.yml`](docker-compose.yml) is for day-to-day development only.
-
-For agents, set `BUZZ_PRIVATE_KEY` and use [`buzz-cli`](crates/buzz-cli) — JSON in, JSON out, designed for LLM tool calls.
+Cargo/Hermit recipes (`just setup`, `just relay`) remain for contributor checks. They are not the studio transport.
 
 ---
 
@@ -196,19 +160,14 @@ If you'd rather point buzz at a different bash-compatible shell, set `BUZZ_SHELL
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                             Clients                                     │
-│  Human client         AI agent              CLI / scripts               │
-│  (Buzz desktop)       (Goose, Codex, ...)   (buzz-cli, agents)          │
-│       │               ┌──────────────┐               │                  │
-│       │               │  buzz-acp  │                 │                  │
-│       │               │  (ACP ↔ MCP) │               │                  │
-│       │               └──────┬───────┘               │                  │
-│       │                      │                       │                  │
-└───────┼──────────────────────┼───────────────────────┼──────────────────┘
-        │ WebSocket            │ WS + REST             │ WS + REST
-        ▼                      ▼                       ▼
+│  Human client (Buzz desktop)          CLI / scripts (buzz-cli)          │
+│       │                                      │                          │
+└───────┼──────────────────────────────────────┼──────────────────────────┘
+        │ WebSocket                            │ WS + REST
+        ▼                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          buzz-relay                                     │
-│  NIP-01 · NIP-42 auth · channel/DM/media/workflow/git REST · audit log  │
+│  NIP-29 room · NIP-01 · NIP-42 auth · ws://localhost:3300               │
 └───┬──────────────────────────┬──────────────────────────┬───────────────┘
     │                          │                          │
  ┌──▼───────────┐       ┌──────▼──────┐           ┌───────▼─────┐
@@ -227,9 +186,9 @@ A Rust workspace of focused crates. Single source of truth: the relay. See [ARCH
 
 **Services** — `buzz-db` (Postgres) · `buzz-auth` (NIP-42/98 Schnorr auth, rate limiting) · `buzz-pubsub` (Redis, presence, typing) · `buzz-search` (Postgres FTS) · `buzz-audit` (hash-chain log). Multi-community mode scopes tenant-observable rows, cache keys, search documents, workflow state, media metadata, git repo pointers, and audit chains by the host-derived community; shared infrastructure is an implementation detail, not a user-visible global workspace.
 
-**Agent surface** — `buzz-cli` (agent-first CLI, JSON in / JSON out) · `buzz-acp` (ACP harness for Goose/Codex/Claude Code) · `buzz-agent` (ACP agent — see [VISION_AGENT.md](VISION_AGENT.md)) · `buzz-dev-mcp` (shell + file-edit tools) · `buzz-workflow` (YAML automation) · `buzz-persona` (agent persona packs)
+**Agent surface** — `buzz-cli` (agent-first CLI, JSON in / JSON out). ACP mention-fleet / writer / foundry is not a required boot path on this fork.
 
-**Git & pairing** — `git-sign-nostr` / `git-credential-nostr` (nostr-signed git) · `buzz-pair-relay` / `buzz-pairing-cli` (relay pairing)
+**Git** — `git-sign-nostr` / `git-credential-nostr` (nostr-signed git). Pairing-code / phone-pair sidecar is not an advertised path.
 
 **Shared** — `buzz-sdk` (typed event builders) · `buzz-media` (Blossom/S3)
 
@@ -257,9 +216,9 @@ All defaults work out of the box. Override via `.env`. Full reference in [`.env.
 <summary><strong>Common dev commands</strong></summary>
 
 ```bash
-just setup          # Docker, migrations, desktop deps
-just relay          # Run the relay
-just dev            # Run the desktop app
+cd deploy/compose && ./run.sh start   # prod relay on :3300
+just setup                            # contributor Docker/deps (not studio transport)
+just release-desktop                  # only packager (`scripts/desktop_release.py`)
 just build          # Build the Rust workspace
 just check          # fmt + clippy + desktop check
 just test-unit      # Unit tests (no infra required)
