@@ -51,4 +51,3 @@ docs/
 # Old Dockerfile noise (this Dockerfile is THE source of truth now)
 docker-compose.yml
 docker-compose.*.yml
-prometheus.yml

@@ -1,16 +1,23 @@
 # Buzz Docker Compose deployment
 
-This is the single-node/VPS deployment bundle. It is intentionally separate from
-the root `docker-compose.yml`, which remains local development infrastructure.
+Local Docker prod relay is the studio transport: `compose.yml` only,
+`ws://localhost:3300`, NIP-29 room. There is no second required compose,
+no Prometheus overlay, and no A-01E activation step.
+
+Root `docker-compose.yml` remains contributor infrastructure for
+`just setup` / CI. It is not the advertised studio path.
 
 ## Quick start
 
 ```bash
 cd deploy/compose
 cp .env.example .env
-$EDITOR .env       # replace every CHANGE_ME value
+# RELAY_OWNER_PUBKEY is the existing #local-dev pin. Do not remint.
+# Fill remaining CHANGE_ME secrets. Do not rotate the owner pin.
 ./run.sh start
 ```
+
+Relay: `ws://localhost:3300`.
 
 For a public VPS with automatic Let's Encrypt certificates:
 
@@ -19,9 +26,8 @@ cd deploy/compose
 BUZZ_COMPOSE_TLS=true ./run.sh start
 ```
 
-The bootstrap script should eventually replace manual `.env` editing for normal
-users. It is responsible for generating stable secrets and, optionally, an owner
-keypair.
+Do not generate a new owner keypair. The identity target is the existing
+`#local-dev` pin in `.env.example`.
 
 ## Production notes
 
@@ -29,15 +35,15 @@ keypair.
   `!reset` tag to remove the direct relay port when Caddy terminates HTTPS.
 - Default `BUZZ_IMAGE` tracks `ghcr.io/block/buzz:main` for early testing. Pin it to `ghcr.io/block/buzz:sha-<7>` or a semver release tag for production once available.
 - Keep `BUZZ_RELAY_PRIVATE_KEY`, `BUZZ_GIT_HOOK_HMAC_SECRET`, database/Redis,
-  and S3 secrets stable across restarts.
-- `RELAY_OWNER_PUBKEY` is intentionally not prefixed with `BUZZ_`; it must be a
-  64-character hex Nostr pubkey when closed relay mode is enabled.
+  and S3 secrets stable across restarts. Do not remint the owner pin.
+- `RELAY_OWNER_PUBKEY` is intentionally not prefixed with `BUZZ_`; it must be the
+  full 64-character hex Nostr pubkey (not an 8-hex prefix).
 - `BUZZ_AUTO_MIGRATE` is opt-in. Set `BUZZ_AUTO_MIGRATE=true` or run
   `buzz-admin migrate` before starting the relay when bootstrapping a fresh
   database. Auto-migration requires an image that includes embedded SQLx
   migrations.
 - The stack uses Postgres, Redis, MinIO, and a git data volume because
-  those are real Buzz dependencies today. Minimal mode can simplify this later.
+  those are real Buzz dependencies today.
 - The bundled Compose stack fixes the relay endpoint to `http://minio:9000` and
   `BUZZ_S3_ADDRESSING_STYLE=path`: Docker DNS resolves `minio`, not
   `<bucket>.minio`. It is not configurable for an external S3 provider through
@@ -48,12 +54,10 @@ Run `./run.sh backup-hint` for the backup checklist.
 
 ## Validation
 
-Before sharing an install link publicly, verify a fresh install with:
-
 ```bash
 cd deploy/compose
 cp .env.example .env
-$EDITOR .env
+# keep the #local-dev owner pin; fill remaining CHANGE_ME secrets
 ./run.sh config
 ./run.sh start
 curl -fsS "http://127.0.0.1:$(grep -E '^BUZZ_HTTP_PORT=' .env | cut -d= -f2-)/_liveness"

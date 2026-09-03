@@ -777,7 +777,6 @@ Docker Compose provides the full local development stack. All services include h
 | Redis | `redis:7-alpine` | 6379 | Pub/sub fan-out, presence (SET EX), typing (sorted sets) |
 | Adminer | `adminer` | 8082 | DB web UI (dev only) |
 | MinIO | `minio/minio` | 9000 (API), 9001 (console) | S3-compatible object storage (media) |
-| Prometheus | `prom/prometheus` | 9090 | Metrics collection |
 
 ### Postgres Schema (key tables)
 
