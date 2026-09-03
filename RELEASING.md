@@ -70,6 +70,69 @@ or mobile GitHub Release.
    last for stable versions. A failed platform leaves no partially published
    versioned release.
 
+### Local-dev production profile
+
+The same Desktop lane (`scripts/desktop_release.py`,
+`.release/desktop-candidate.json`, `just release-desktop`) also owns a
+`#local-dev` production profile used for boot-time admission — not a second
+packager, schema, or crate.
+
+Pins live in `.release/local-dev-production.json` and are compiled into the
+Tauri boot path (`desktop/src-tauri`):
+
+- Bundle identifier `xyz.block.buzz.app`
+- Production keyring `buzz-desktop` (not `buzz-desktop-dev`)
+- Relay `ws://localhost:3300` (not `:3000`)
+- Owner public-key pin is the compiled 64-hex key and `sha256:` of the raw
+  32-byte key in `.release/local-dev-production.json`. Display prefix
+  `ea840b3e` is not a boundary. Manifest pins must equal that compiled JSON
+  byte-for-byte; a forged exact pin against an unpinned compiled profile is
+  denied. Authority class is the SuperDaws-chat receipt in
+  `.release/SUPERDAWS-OWNER-PIN-RECEIPT.md` (not a Clerk Word).
+  Finder-launched signed apps do not inherit worker env vars.
+- Approved macOS Team ID / codesign identity pins are compiled and currently
+  empty (leftover `approved-macos-signing-pin`). Do not invent a Team ID.
+  Empty signing pins fail closed.
+- First-launch generate is refused while the profile is active
+  (`BUZZ_DESKTOP_LOCAL_DEV_PRODUCTION=1` at compile time).
+- Desktop is optional to `buzz_transport`. Transport is required by Desktop.
+  Transport is not failed solely because Desktop is absent.
+
+```sh
+just release-desktop-local-dev-package /var/tmp/buzz-desktop-releases
+just release-desktop-local-dev-verify /var/tmp/buzz-desktop-releases
+# local-dev-rollback is leftover historical-package-rollback (hard-disabled).
+```
+
+The packager derives source identity from **Git tree entries** (`git ls-tree`
+path, type, mode, blob/gitlink object), requires `source_commit == HEAD`,
+and refuses to reopen an existing digest directory. Verification recomputes
+that digest. Runtime roots in the source package are platform-neutral
+templates. `local-dev-rollback` is leftover and must not mutate `current`.
+Stage 3 recreates the package on the isolated Mac from the approved commit.
+
+A Linux host cannot produce a signed, notarized `Buzz.app`. Source packages
+record leftover `mac-packaged-app-build`. A boolean, a bare SHA-256, or
+caller-supplied identity strings are not proof. Any Apple-notarized app is
+not enough: admission requires this bundle identifier, compiled signing
+pins, executable, version, source/build receipt, embedded compiled profile,
+and independent codesign/Gatekeeper/stapler on a real Buzz.app. App tree
+digests include symlinks and file modes. The self-attesting Mac producer is
+hard-disabled (Stage 3 leftover `mac-controlled-candidate-producer`): it
+must not manufacture provenance from caller-supplied `.app` bytes.
+`live/` is refused for self-attested or caller-supplied provenance.
+Incomplete observations go under `candidate/evidence/` through one held
+release-root directory descriptor for the whole operation: exclusive temp,
+fsync, descriptor-relative rename or no-replace publish. Writers never
+reopen a descendant package pathname and never truncate an existing
+authority inode. Residual writer debt is leftover
+`release-root-writer-containment` and must not open `live/` while
+signing/producer holds remain. The owner pin comes only from the compiled profile;
+CLI cannot override it. See `.release/LEFTOVER-mac-packaged-app-build.md` and
+`.release/LEFTOVER-mac-controlled-candidate-producer.md`. Do not install
+or start Buzz.app from this flow. This leftover does not claim a signed Mac
+app exists. This head is not a Stage 2 pass.
+
 ### Relay
 
 1. **`just release-relay`** runs locally on `main`, creates or updates a

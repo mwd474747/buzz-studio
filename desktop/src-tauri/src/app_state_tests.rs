@@ -1,9 +1,7 @@
 use super::*;
-
 fn assert_key_eq(a: &Keys, b: &Keys) {
     assert_eq!(a.public_key().to_hex(), b.public_key().to_hex());
 }
-
 /// `BUZZ_PRIVATE_KEY` is process-global; serialize the env-mutating tests
 /// so they don't race each other under the parallel test runner.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1415,3 +1413,5 @@ fn corrupt_keyring_no_marker_no_file_generates_fresh() {
         "a fresh key must be stored in the keyring or the file after generate_and_persist"
     );
 }
+#[path = "local_dev_production_boot_tests.rs"]
+mod local_dev_production_boot_tests;

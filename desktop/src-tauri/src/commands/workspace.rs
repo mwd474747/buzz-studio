@@ -142,6 +142,13 @@ pub async fn apply_workspace(
             }
             None => None,
         };
+        crate::local_dev_production::admit_workspace_apply(
+            &relay_url,
+            parsed_keys
+                .as_ref()
+                .map(|keys| keys.public_key().to_hex())
+                .as_deref(),
+        )?;
 
         // Decide the effective repos_dir from the candidate. A bad path does NOT
         // reject — it is treated as if no override were set: relay/keys still

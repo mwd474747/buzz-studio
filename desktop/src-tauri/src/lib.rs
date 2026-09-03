@@ -11,6 +11,7 @@ mod huddle;
 mod identity_storage;
 mod key_backup;
 mod linux_media;
+mod local_dev_production;
 mod managed_agents;
 mod media_proxy;
 #[cfg(feature = "mesh-llm")]
@@ -418,7 +419,6 @@ pub fn run() {
                 eprintln!("buzz-desktop: fatal: identity resolution failed: {e}");
                 std::process::exit(1);
             }
-
             // When the identity is in recovery mode (lost = keyring empty after
             // migration, or keyring-locked = keyring unreachable but marker
             // present), all owner-keyed side effects (event sync, agent restore,

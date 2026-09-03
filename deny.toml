@@ -15,6 +15,11 @@ ignore = [
     # remove these when upstream catches up.
     { id = "RUSTSEC-2026-0194", reason = "transitive via rust-s3 and mesh-llm→plist; trusted-input XML only; no upstream fix available yet" },
     { id = "RUSTSEC-2026-0195", reason = "transitive via rust-s3 and mesh-llm→plist; trusted-input XML only; no upstream fix available yet" },
+    # Informational unmaintained only. RUSTSEC-2026-0231/0232 are patched by
+    # nostr-relay-pool >=0.44.3; RUSTSEC-2026-0257 is patched by webbrowser
+    # >=1.2.2. Migrating off the crate to nostr-sdk 0.45 is leftover
+    # `.release/LEFTOVER-nostr-sdk-0.45-migration.md` (pairing-adjacent).
+    { id = "RUSTSEC-2026-0243", reason = "informational unmaintained; 0.45 migration is leftover nostr-sdk-0.45-migration (pairing-adjacent); not a waive of 0231/0232/0257" },
 ]
 
 [licenses]

@@ -24,6 +24,9 @@ fn configured_env_var(name: &str) -> Option<String> {
 }
 
 pub fn relay_ws_url() -> String {
+    if crate::local_dev_production::profile_active() {
+        return crate::local_dev_production::PRODUCTION_RELAY_WS_URL.to_string();
+    }
     configured_env_var("BUZZ_RELAY_URL")
         .or_else(|| option_env!("BUZZ_DESKTOP_BUILD_RELAY_URL").map(str::to_string))
         .unwrap_or_else(|| DEFAULT_RELAY_WS_URL.to_string())
@@ -41,13 +44,21 @@ fn workspace_relay_override(state: &AppState) -> Option<String> {
 
 /// Returns the relay WebSocket URL, checking the workspace override first.
 /// Precedence: workspace override > env vars > build-time vars > default.
+/// The local-dev production profile pins `ws://localhost:3300` over any override.
 pub fn relay_ws_url_with_override(state: &AppState) -> String {
+    if crate::local_dev_production::profile_active() {
+        return crate::local_dev_production::PRODUCTION_RELAY_WS_URL.to_string();
+    }
     workspace_relay_override(state).unwrap_or_else(relay_ws_url)
 }
 
 /// Returns the relay HTTP API base URL, checking the workspace override first.
 /// Precedence: workspace override > env vars > build-time vars > default.
+/// The local-dev production profile pins `ws://localhost:3300` over any override.
 pub fn relay_api_base_url_with_override(state: &AppState) -> String {
+    if crate::local_dev_production::profile_active() {
+        return relay_http_base_url(crate::local_dev_production::PRODUCTION_RELAY_WS_URL);
+    }
     match workspace_relay_override(state) {
         Some(url) => relay_http_base_url(&url),
         None => relay_api_base_url(),
