@@ -9,12 +9,16 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use nostr::{Event, ToBech32};
+use nostr::Event;
+#[cfg(not(feature = "local-owner-profile"))]
+use nostr::ToBech32;
 use serde_json::{json, Value};
 
 use crate::models::*;
 
+mod time;
 mod user_search;
+pub(crate) use time::timestamp_to_iso;
 pub use user_search::{
     list_user_search_results, rank_user_search_results, search_users_from_events,
     user_search_result_from_event,
@@ -442,6 +446,7 @@ pub fn search_response_from_events(events: &[Event]) -> SearchResponse {
 ///
 /// Returns a JSON array of `{pubkey, name, ...}` objects parsed from each
 /// event's content.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn agents_from_events(events: &[Event]) -> Value {
     let arr: Vec<Value> = events
         .iter()
@@ -538,43 +543,6 @@ pub fn relay_members_from_event(event: &Event) -> Value {
     }
 
     json!({ "members": members })
-}
-
-// ── Time helpers ────────────────────────────────────────────────────────────
-
-/// Convert a unix-seconds timestamp to a UTC RFC-3339 string.
-pub(crate) fn timestamp_to_iso(secs: u64) -> String {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    let dt = UNIX_EPOCH + Duration::from_secs(secs);
-    // Format manually as RFC-3339 — the `time` crate is already a transitive
-    // dep, but using SystemTime keeps this self-contained.
-    let dur = dt
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs_total = dur.as_secs() as i64;
-    // Days since epoch, seconds within day.
-    let (days, sod) = (secs_total.div_euclid(86_400), secs_total.rem_euclid(86_400));
-    let h = sod / 3600;
-    let m = (sod % 3600) / 60;
-    let s = sod % 60;
-    let (y, mo, d) = days_to_ymd(days);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
-/// Convert days-since-1970-01-01 to (year, month, day) using the civil-from-days
-/// algorithm by Howard Hinnant (public domain).
-fn days_to_ymd(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }
 
 #[cfg(test)]
@@ -883,6 +851,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn agents_overwrites_pubkey_from_event_author() {
         let e = ev(10100, r#"{"pubkey":"forged","name":"agent-1"}"#, vec![]);
         let v = agents_from_events(std::slice::from_ref(&e));
@@ -896,6 +865,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn agents_handles_invalid_content() {
         let e = ev(10100, "not-json", vec![]);
         let v = agents_from_events(std::slice::from_ref(&e));
@@ -907,6 +877,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn agents_default_sparse_agent_profiles_for_directory_parse() {
         let e = ev(
             10100,
@@ -929,6 +900,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn agents_preserves_public_respond_to_mode_for_directory_parse() {
         let e = ev(10100, r#"{"name":"Scout","respond_to":"anyone"}"#, vec![]);
         let v = agents_from_events(std::slice::from_ref(&e));
@@ -944,6 +916,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn agents_preserves_allowlist_metadata_for_directory_parse() {
         let e = ev(
             10100,

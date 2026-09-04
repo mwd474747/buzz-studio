@@ -1,16 +1,21 @@
+#[cfg(not(feature = "local-owner-profile"))]
 use tauri::Manager;
 
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::app_state::AppState;
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::managed_agents::{
     self, kill_stale_tracked_processes, load_managed_agents, save_managed_agents,
     sync_managed_agent_processes, BackendKind,
 };
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::{prevent_sleep, util};
 
 pub(crate) fn is_restart_request(code: Option<i32>) -> bool {
     code == Some(tauri::RESTART_EXIT_CODE)
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn shut_down_app(app: &tauri::AppHandle, shutdown_done: &std::sync::atomic::AtomicBool) {
     use std::sync::atomic::Ordering;
 
@@ -27,8 +32,16 @@ pub(crate) fn shut_down_app(app: &tauri::AppHandle, shutdown_done: &std::sync::a
     }
 }
 
+#[cfg(feature = "local-owner-profile")]
+pub(crate) fn shut_down_app(
+    _app: &tauri::AppHandle,
+    shutdown_done: &std::sync::atomic::AtomicBool,
+) {
+    shutdown_done.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Install SIGINT/SIGTERM/SIGHUP cleanup on ctrlc's dedicated handler thread.
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "local-owner-profile")))]
 pub(crate) fn install_signal_handler(
     app: tauri::AppHandle,
     shutdown_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -53,7 +66,24 @@ pub(crate) fn install_signal_handler(
     }
 }
 
-#[cfg(all(feature = "mesh-llm", target_os = "macos"))]
+#[cfg(all(unix, feature = "local-owner-profile"))]
+pub(crate) fn install_signal_handler(
+    _app: tauri::AppHandle,
+    shutdown_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    if let Err(error) = ctrlc::set_handler(move || {
+        shutdown_done.store(true, std::sync::atomic::Ordering::SeqCst);
+        std::process::exit(0);
+    }) {
+        eprintln!("buzz-desktop: failed to register signal handler: {error}");
+    }
+}
+
+#[cfg(all(
+    feature = "mesh-llm",
+    target_os = "macos",
+    not(feature = "local-owner-profile")
+))]
 fn updated_macos_binary(current_binary: &std::path::Path) -> Option<std::path::PathBuf> {
     let macos_directory = current_binary.parent()?;
     if macos_directory.file_name()? != "MacOS" {
@@ -69,7 +99,11 @@ fn updated_macos_binary(current_binary: &std::path::Path) -> Option<std::path::P
     Some(macos_directory.join(binary_name))
 }
 
-#[cfg(all(feature = "mesh-llm", target_os = "macos"))]
+#[cfg(all(
+    feature = "mesh-llm",
+    target_os = "macos",
+    not(feature = "local-owner-profile")
+))]
 pub(crate) fn relaunch_after_mesh_shutdown(app: &tauri::AppHandle) -> ! {
     use std::process::Command;
 
@@ -90,7 +124,11 @@ pub(crate) fn relaunch_after_mesh_shutdown(app: &tauri::AppHandle) -> ! {
     hard_exit_after_mesh_shutdown();
 }
 
-#[cfg(all(feature = "mesh-llm", target_os = "macos"))]
+#[cfg(all(
+    feature = "mesh-llm",
+    target_os = "macos",
+    not(feature = "local-owner-profile")
+))]
 pub(crate) fn hard_exit_after_mesh_shutdown() -> ! {
     // SAFETY: all Buzz-managed subprocesses and the embedded Mesh runtime have
     // been stopped. `_exit` intentionally skips only process-global C++
@@ -98,7 +136,7 @@ pub(crate) fn hard_exit_after_mesh_shutdown() -> ! {
     unsafe { libc::_exit(0) }
 }
 
-#[cfg(feature = "mesh-llm")]
+#[cfg(all(feature = "mesh-llm", not(feature = "local-owner-profile")))]
 pub(crate) fn shutdown_mesh_runtime(app: &tauri::AppHandle) {
     let app = app.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -118,6 +156,7 @@ pub(crate) fn shutdown_mesh_runtime(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn shutdown_managed_agents(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _restore_transition = state

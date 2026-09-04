@@ -19,9 +19,12 @@ pub async fn submit_signed_event_at_with_keys(
     api_base_url: &str,
     keys: &nostr::Keys,
 ) -> Result<SubmitEventResponse, String> {
+    crate::local_owner_profile::require_explicit_signer(state, keys)?;
+    crate::local_owner_profile::require_relay_http_base(api_base_url)?;
     if event.pubkey != keys.public_key() {
         return Err("signed event does not match the publishing identity".to_string());
     }
+    crate::local_owner_profile::require_native_interaction_event(event)?;
     crate::relay_admission::wait_for_rate_limit().await;
     let url = format!("{}/events", api_base_url.trim_end_matches('/'));
     let body_bytes = event.as_json().into_bytes();
@@ -61,6 +64,7 @@ pub async fn submit_event_at_with_keys(
     api_base_url: &str,
     keys: &nostr::Keys,
 ) -> Result<SubmitEventResponse, String> {
+    crate::local_owner_profile::require_explicit_signer(state, keys)?;
     let event = builder
         .sign_with_keys(keys)
         .map_err(|e| format!("failed to sign event: {e}"))?;

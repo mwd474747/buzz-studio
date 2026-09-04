@@ -224,6 +224,10 @@ desktop-tauri-test-compiled-flags: _ensure-sidecar-stubs
     BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY=1 \
       BUZZ_TEST_EXPECTED_AUTO_CONNECT_DEFAULT_RELAY=true \
       cargo test compiled_flag_matches_expected -- --ignored --nocapture
+    echo "=== Local-owner Cargo feature → compile-time profile enabled ==="
+    cargo test compile_state_helper_matches_the_cargo_feature -- --nocapture
+    cargo test --features local-owner-profile \
+      compile_state_helper_matches_the_cargo_feature -- --nocapture
     echo "Both compiled states verified."
 
 # Build the full desktop Tauri app locally (unsigned, for testing)
@@ -241,6 +245,15 @@ desktop-release-build target="aarch64-apple-darwin":
     touch "desktop/src-tauri/binaries/buzz-$TARGET"
     pnpm install
     cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target {{target}}
+
+# Build the exact local-owner Mac app through the normal Tauri bundle. This is
+# intentionally unsigned local runtime evidence until Apple signing is ratified.
+desktop-local-owner-build:
+    scripts/build-local-owner-macos.sh
+
+# Exercise the local-owner release boundary without building or signing an app.
+desktop-local-owner-release-contract:
+    scripts/test-local-owner-release-contract.sh
 
 # Run desktop checks suitable for CI / pre-push
 desktop-ci: desktop-check desktop-test desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-tauri-test

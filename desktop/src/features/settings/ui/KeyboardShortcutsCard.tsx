@@ -3,6 +3,7 @@ import {
   getPlatformKeys,
   type KeyboardShortcut,
 } from "@/shared/lib/keyboard-shortcuts";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
 import { SettingsSectionHeader } from "./SettingsSectionHeader";
 
@@ -30,6 +31,20 @@ function KeyCombo({ shortcut }: { shortcut: KeyboardShortcut }) {
 
 export function KeyboardShortcutsCard() {
   const categories = getShortcutsByCategory();
+  if (useLocalOwnerPolicy() !== "inactive") {
+    const omitted = new Set([
+      "browse-channels",
+      "new-channel",
+      "publish-note",
+      "push-to-talk",
+    ]);
+    for (const [category, shortcuts] of categories) {
+      categories.set(
+        category,
+        shortcuts.filter((shortcut) => !omitted.has(shortcut.id)),
+      );
+    }
+  }
 
   return (
     <section className="min-w-0" data-testid="settings-shortcuts">

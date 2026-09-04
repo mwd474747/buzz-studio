@@ -51,7 +51,7 @@ function initialUpdateStatus(): UpdateStatus {
   return { state: "idle" };
 }
 
-export function useUpdater() {
+export function useUpdater(enabled = true) {
   const [status, setStatusState] = useState<UpdateStatus>(initialUpdateStatus);
   const statusRef = useRef<UpdateStatus>(initialUpdateStatus());
   const updateRef = useRef<Update | null>(null);
@@ -77,7 +77,7 @@ export function useUpdater() {
   }, []);
 
   const downloadUpdate = useCallback(async () => {
-    if (downloadInFlightRef.current) {
+    if (!enabled || downloadInFlightRef.current) {
       return;
     }
 
@@ -96,10 +96,10 @@ export function useUpdater() {
     } finally {
       downloadInFlightRef.current = false;
     }
-  }, [setStatus]);
+  }, [enabled, setStatus]);
 
   const installAndRelaunch = useCallback(async () => {
-    if (installInFlightRef.current) {
+    if (!enabled || installInFlightRef.current) {
       return;
     }
 
@@ -119,10 +119,13 @@ export function useUpdater() {
     } finally {
       installInFlightRef.current = false;
     }
-  }, [setStatus]);
+  }, [enabled, setStatus]);
 
   const runUpdateCheck = useCallback(
     async ({ background }: { background: boolean }) => {
+      if (!enabled) {
+        return;
+      }
       if (checkInFlightRef.current) {
         if (!background) {
           manualResultRequestedRef.current = true;
@@ -198,7 +201,7 @@ export function useUpdater() {
         checkInFlightRef.current = false;
       }
     },
-    [closeUpdate, downloadUpdate, setStatus],
+    [closeUpdate, downloadUpdate, enabled, setStatus],
   );
 
   const checkForUpdate = useCallback(async () => {
@@ -210,6 +213,9 @@ export function useUpdater() {
   }, [runUpdateCheck]);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     void checkForUpdateInBackground();
 
     const intervalId = window.setInterval(() => {
@@ -220,7 +226,7 @@ export function useUpdater() {
       window.clearInterval(intervalId);
       closeUpdate();
     };
-  }, [checkForUpdateInBackground, closeUpdate]);
+  }, [checkForUpdateInBackground, closeUpdate, enabled]);
 
   return {
     status,

@@ -1,0 +1,26 @@
+{
+  "identifier": "xyz.block.buzz.app",
+  "app": {
+    "security": {
+      "capabilities": ["local-owner"],
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:3300; img-src 'self' data: blob: buzz-media:; media-src 'self' blob: buzz-media:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'"
+    }
+  },
+  "plugins": {
+    "deep-link": null
+  },
+  "bundle": {
+    "externalBin": [],
+    "macOS": {
+      "entitlements": "Entitlements.local-owner.plist",
+      "infoPlist": "Info.local-owner.plist"
+    },
+    "resources": {
+      "../../.release/local-owner-profile.json": ".release/local-owner-profile.json",
+      "../../.release/local-owner-ratification.json": ".release/local-owner-ratification.json",
+      "../../.release/LOCAL-OWNER-RATIFICATION.md": ".release/LOCAL-OWNER-RATIFICATION.md",
+      "../../.release/LOCAL-OWNER-MACOS-SIGNING-HOLD.md": ".release/LOCAL-OWNER-MACOS-SIGNING-HOLD.md",
+      "generated/local-owner-source-receipt.json": ".release/local-owner-source-receipt.json"
+    }
+  }
+}

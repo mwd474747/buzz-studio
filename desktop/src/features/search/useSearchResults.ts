@@ -4,6 +4,7 @@ import {
   useManagedAgentsQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { useIsArchivedPredicate } from "@/features/identity-archive/hooks";
 import {
   useUserSearchQuery,
@@ -107,6 +108,7 @@ export function useSearchResults({
   const [debouncedQuery, setDebouncedQuery] = React.useState("");
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const isArchivedDiscovery = useIsArchivedPredicate();
+  const agentDirectoryEnabled = useLocalOwnerPolicy() === "inactive";
 
   const channelLookup = React.useMemo(
     () => new Map(channels.map((channel) => [channel.id, channel])),
@@ -140,10 +142,10 @@ export function useSearchResults({
       : "";
 
   const managedAgentsQuery = useManagedAgentsQuery({
-    enabled: searchBackedQueriesEnabled,
+    enabled: searchBackedQueriesEnabled && agentDirectoryEnabled,
   });
   const relayAgentsQuery = useRelayAgentsQuery({
-    enabled: searchBackedQueriesEnabled,
+    enabled: searchBackedQueriesEnabled && agentDirectoryEnabled,
   });
   // Resolve `from:@name` against people, not only agents.
   const fromUserSearchQuery = useUserSearchQuery(fromHandleForLookup, {

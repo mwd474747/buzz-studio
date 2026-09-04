@@ -15,10 +15,11 @@ import type {
 
 export const channelTemplatesQueryKey = ["channel-templates"] as const;
 
-export function useChannelTemplatesQuery() {
+export function useChannelTemplatesQuery(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: channelTemplatesQueryKey,
     queryFn: listChannelTemplates,
+    enabled: options?.enabled,
     staleTime: 30_000,
     refetchInterval: 30_000,
   });

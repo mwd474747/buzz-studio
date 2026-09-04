@@ -1,5 +1,6 @@
 /// Performs the platform's default sidebar alignment haptic when available.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn perform_sidebar_default_haptic() {
     #[cfg(target_os = "macos")]
     {
@@ -35,7 +36,9 @@ pub fn title_bar_double_click(window: tauri::Window) {
     #[cfg(target_os = "macos")]
     {
         let action = {
-            let output = std::process::Command::new("defaults")
+            let output = std::process::Command::new("/usr/bin/defaults")
+                .env_clear()
+                .env("LANG", "C")
                 .args(["read", "-g", "AppleActionOnDoubleClick"])
                 .output();
             match output {

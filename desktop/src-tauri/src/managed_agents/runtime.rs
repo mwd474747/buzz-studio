@@ -446,9 +446,8 @@ pub(crate) fn configure_runtime_cli(
 }
 
 /// Spawn an agent process without holding any locks on records or runtimes.
-/// Returns the child process and log path on success. The caller is responsible
+/// The caller is responsible
 /// for updating `ManagedAgentRecord` fields and inserting into the runtimes map.
-///
 /// `owner_hex`: the workspace owner's pubkey, used as a fallback for legacy
 /// records that have no NIP-OA `auth_tag`. See `build_respond_to_env`.
 pub fn spawn_agent_child(
@@ -458,6 +457,7 @@ pub fn spawn_agent_child(
     lazy: bool,
     owner_hex: Option<&str>,
 ) -> Result<crate::managed_agents::ManagedAgentProcess, String> {
+    crate::local_owner_profile::deny_agent_activation("agent process spawn")?;
     if let Some(error) = spawn_key_refusal(record) {
         return Err(error);
     }

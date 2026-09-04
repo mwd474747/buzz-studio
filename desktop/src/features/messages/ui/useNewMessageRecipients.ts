@@ -17,6 +17,7 @@ import {
   useUserSearchFetchMoreOnScroll,
   useUsersBatchQuery,
 } from "@/features/profile/hooks";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { rankUserCandidatesBySearch } from "@/features/profile/lib/userCandidateSearch";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { ManagedAgent, UserSearchResult } from "@/shared/api/types";
@@ -79,6 +80,7 @@ export function useNewMessageRecipients({
   const deferredSearchQuery = React.useDeferredValue(searchQuery.trim());
   const hasReachedRecipientLimit =
     selectedUsers.length >= NEW_MESSAGE_RECIPIENT_LIMIT;
+  const agentDirectoryEnabled = useLocalOwnerPolicy() === "inactive";
 
   const selectedPubkeys = React.useMemo(
     () => new Set(selectedUsers.map((user) => normalizePubkey(user.pubkey))),
@@ -86,8 +88,12 @@ export function useNewMessageRecipients({
   );
 
   const identityQuery = useIdentityQuery();
-  const managedAgentsQuery = useManagedAgentsQuery({ enabled: active });
-  const relayAgentsQuery = useRelayAgentsQuery({ enabled: active });
+  const managedAgentsQuery = useManagedAgentsQuery({
+    enabled: active && agentDirectoryEnabled,
+  });
+  const relayAgentsQuery = useRelayAgentsQuery({
+    enabled: active && agentDirectoryEnabled,
+  });
   const channelsQuery = useChannelsQuery({ enabled: active });
   const userSearchQuery = useInfiniteUserSearchQuery(deferredSearchQuery, {
     allowEmpty: true,

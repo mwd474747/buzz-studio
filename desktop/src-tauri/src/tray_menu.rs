@@ -300,6 +300,25 @@ fn build_menu<R: Runtime>(
     let mut activity_items =
         Vec::with_capacity(activities.len().saturating_add(recent_activities.len()));
 
+    if crate::local_owner_profile::profile_active() {
+        menu.append(&MenuItem::with_id(
+            app,
+            OPEN_BUZZ_ID,
+            "Open Buzz",
+            true,
+            None::<&str>,
+        )?)?;
+        append_separator(app, &menu)?;
+        menu.append(&MenuItem::with_id(
+            app,
+            QUIT_ID,
+            "Quit Buzz",
+            true,
+            None::<&str>,
+        )?)?;
+        return Ok((menu, activity_items));
+    }
+
     let running = MenuItem::new(app, "Running", false, None::<&str>)?;
     menu.append(&running)?;
 

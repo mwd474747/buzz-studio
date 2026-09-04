@@ -24,6 +24,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+#[path = "secret_store_bulk.rs"]
+#[cfg(not(feature = "local-owner-profile"))]
+mod bulk;
+
 /// Result of probing the keyring before a migration: distinguishes "reachable
 /// but holds no entry" (safe to migrate into) from "unreachable this boot"
 /// (must NOT migrate — re-importing from a leftover plaintext file could
@@ -593,27 +597,6 @@ impl SecretStore {
         }
     }
 
-    /// Insert all entries from `entries` into the blob in a single mutation.
-    ///
-    /// Entries that already exist in the blob are overwritten; entries not
-    /// present in `entries` are left unchanged. If the resulting blob is
-    /// identical to what is already stored, no keychain write occurs.
-    pub fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String> {
-        #[cfg(feature = "system-keyring")]
-        {
-            self.mutate_blob(|map| {
-                for (k, v) in entries {
-                    map.insert(k.clone(), v.clone());
-                }
-            })
-        }
-        #[cfg(not(feature = "system-keyring"))]
-        {
-            let _ = entries;
-            Err("system-keyring feature disabled".to_string())
-        }
-    }
-
     /// On first launch after upgrading from the per-key DPK format, read the
     /// old DPK entry for `key`, write it into a new blob, and delete the old
     /// item. Returns `Ok(None)` when no old entry exists.
@@ -753,6 +736,7 @@ impl SecretStore {
     /// This is the correct wipe path for sign-out: the old `delete_all` skipped
     /// step 1–3 so stale per-key entries could be re-imported on the next launch
     /// via `migrate_legacy_key`. This method prevents that resurrection.
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn delete_all_with_legacy_cleanup(&self) -> Result<(), String> {
         #[cfg(feature = "system-keyring")]
         {
@@ -845,6 +829,7 @@ impl SecretStore {
     /// Returns `true` when all three shapes are absent (or inaccessible in an
     /// expected way), `false` when any entry is found or the keychain is
     /// unavailable (fail-closed).
+    #[cfg(not(feature = "local-owner-profile"))]
     pub fn verify_fully_wiped(&self) -> bool {
         #[cfg(feature = "system-keyring")]
         {
@@ -1268,6 +1253,7 @@ mod tests {
 
     #[ignore = "requires real OS keychain (run locally)"]
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn delete_all_with_legacy_cleanup_removes_per_key_identity() {
         let svc = "buzz-test-delete-all-legacy";
         let key = "identity";

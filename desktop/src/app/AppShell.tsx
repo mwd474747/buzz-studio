@@ -36,11 +36,7 @@ import {
 } from "@/features/notifications/hooks";
 import { PreventSleepProvider } from "@/features/agents/usePreventSleep";
 import { requestOpenCreateAgent } from "@/features/agents/openCreateAgentEvent";
-import { useAgentsDataRefresh } from "@/features/agents/lib/useAgentsDataRefresh";
-import { useManagedAgentRuntimeReconciliation } from "@/features/agents/useManagedAgentRuntimeReconciliation";
-import { useAutoRestartPolicy } from "@/features/agents/lib/useAutoRestartPolicy";
-import { usePersonaSync } from "@/features/agents/lib/usePersonaSync";
-import { useAgentObserverIngestion } from "@/features/agents/useAgentObserverIngestion";
+import { useLegacyAgentCockpitEffects } from "@/features/agents/useLegacyAgentCockpitEffects";
 import { AgentManagementDialogs } from "@/features/agents/ui/AgentManagementDialogs";
 import { RequestedAgentCreateDialogs } from "@/features/agents/ui/RequestedAgentCreateDialogs";
 import {
@@ -53,9 +49,6 @@ import {
   useUserStatusSubscription,
 } from "@/features/user-status/hooks";
 import { useCommunityEmojiLiveUpdates } from "@/features/custom-emoji/hooks";
-import { useArchiveSync } from "@/features/local-archive/archiveSyncManager";
-import { useObserverArchiveReconciliation } from "@/features/local-archive/useObserverArchiveSeed";
-import { useAgentMetricArchiveSeed } from "@/features/local-archive/useAgentMetricArchiveSeed";
 import { useProfileQuery } from "@/features/profile/hooks";
 import { SendFeedbackController } from "@/features/settings/ui/SendFeedbackController";
 import {
@@ -74,6 +67,7 @@ import { CommunityRail } from "@/features/sidebar/ui/CommunityRail";
 import { useChannelMutes } from "@/features/sidebar/lib/useChannelMutes";
 import { useChannelStars } from "@/features/sidebar/lib/useChannelStars";
 import { useCommunities } from "@/features/communities/useCommunities";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import {
   consumePendingCommunityRestore,
   loadCommunityDestination,
@@ -105,11 +99,14 @@ const LazySettingsScreen = React.lazy(async () => {
 });
 
 export function AppShell() {
+  const localOwnerPolicy = useLocalOwnerPolicy();
   useWebviewZoomShortcuts();
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
   const communitiesHook = useCommunities();
-  const hasCommunityRail = communitiesHook.communities.length > 1;
+  const communityControlsEnabled = localOwnerPolicy === "inactive";
+  const hasCommunityRail =
+    communityControlsEnabled && communitiesHook.communities.length > 1;
   const addCommunityDialog = useAddCommunityDialogState();
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
@@ -123,7 +120,6 @@ export function AppShell() {
   const mainInsetRef = React.useRef<HTMLElement>(null);
   const location = useLocation();
   const queryClient = useQueryClient();
-  useManagedAgentRuntimeReconciliation(communitiesHook.communities); // sync storage snapshot
   const {
     goAgents,
     goChannel,
@@ -151,7 +147,6 @@ export function AppShell() {
     selectedChannelId,
     selectedView,
   });
-  // Settings lives in history so back returns to the previous app entry.
   const settingsOpen = location.pathname === "/settings";
   const locationSearchSection = (location.search as { section?: unknown })
     .section;
@@ -162,47 +157,33 @@ export function AppShell() {
     : DEFAULT_SETTINGS_SECTION;
   const startupReady = useDeferredStartup();
   const identityQuery = useIdentityQuery();
+  const localStatePubkey = identityQuery.data?.pubkey;
+  const automaticSyncEnabled = localOwnerPolicy === "inactive";
   const { mutedChannelIds, muteChannel, unmuteChannel } = useChannelMutes(
-    identityQuery.data?.pubkey,
+    localStatePubkey,
+    automaticSyncEnabled,
   );
   const { starredChannelIds, starChannel, unstarChannel } = useChannelStars(
-    identityQuery.data?.pubkey,
+    localStatePubkey,
+    automaticSyncEnabled,
   );
-  usePersonaSync(
-    identityQuery.data?.pubkey,
-    communitiesHook.activeCommunity?.relayUrl,
-  );
-  useAgentsDataRefresh();
-  // Chunk F: auto-restart drifted idle agents (per-agent opt-out, default ON).
-  useAutoRestartPolicy();
-  // Owner-global observer ingestion: receives + decrypts agent observer
-  // frames and keeps derived active-turn liveness in sync app-wide, so no
-  // individual screen/panel has to mount its own bridge for ingestion.
-  // Intentionally mounted without a `startupReady`/identity guard: before
-  // `currentPubkey` resolves the hook ingests managed agents only, and
-  // relay-owned agents join automatically once identity arrives. Adding a
-  // guard here would drop managed-agent coverage during startup.
-  useAgentObserverIngestion();
-  // Kind 24200 is relay-ephemeral, so reconciliation runs eagerly (not
-  // deferred) and unconditionally repairs the DB subscription on internal
-  // builds — otherwise frames emitted before the listener opens are lost.
-  const observerReconciled = useObserverArchiveReconciliation(
-    identityQuery.data?.pubkey,
-  );
-  // useArchiveSync must wait for reconciliation, or listeners could open
-  // before kind 24200 is guaranteed present in the subscription.
-  useArchiveSync(observerReconciled);
-  // Kind 44200 is relay-persisted (durable) and stays deferred: missed
-  // startup frames can be replayed, so there's no ordering constraint.
   const deferredPubkey = startupReady ? identityQuery.data?.pubkey : undefined;
-  useAgentMetricArchiveSeed(deferredPubkey);
+  useLegacyAgentCockpitEffects({
+    communities: communitiesHook.communities,
+    deferredOwnerPubkey: deferredPubkey,
+    enabled: localOwnerPolicy === "inactive",
+    ownerPubkey: identityQuery.data?.pubkey,
+    relayUrl: communitiesHook.activeCommunity?.relayUrl,
+  });
   const profileQuery = useProfileQuery();
   useRelayAutoHeal();
   usePresenceSubscription();
   useUserStatusSubscription();
   useCommunityEmojiLiveUpdates();
   useMembershipNotifications(identityQuery.data?.pubkey);
-  const presenceSession = usePresenceSession(deferredPubkey);
+  const presenceSession = usePresenceSession(
+    localOwnerPolicy === "inactive" ? deferredPubkey : undefined,
+  );
   const selfStatusQuery = useUserStatusQuery(
     deferredPubkey ? [deferredPubkey] : [],
   );
@@ -213,7 +194,7 @@ export function AppShell() {
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
   useReminderNotifications(
-    identityQuery.data?.pubkey,
+    localOwnerPolicy === "inactive" ? identityQuery.data?.pubkey : undefined,
     notificationSettings.settings,
     channels,
   );
@@ -221,7 +202,7 @@ export function AppShell() {
     void homeFeedQuery.refetch();
   });
   useLiveHomeFeedActions(
-    identityQuery.data?.pubkey,
+    localOwnerPolicy === "inactive" ? identityQuery.data?.pubkey : undefined,
     refetchHomeFeedFromLiveSignal,
   );
   const { refetch: refetchChannels } = channelsQuery;
@@ -255,8 +236,6 @@ export function AppShell() {
     }
     hasRestoredCommunityDestinationRef.current = true;
 
-    // Restoration belongs to an explicit community transition. Cold boot and
-    // reconnect remounts must preserve the route the user explicitly opened.
     if (!consumePendingCommunityRestore(activeCommunityId)) {
       return;
     }
@@ -275,9 +254,6 @@ export function AppShell() {
       return;
     }
 
-    // The normal switch path writes the remembered channel into the hash before
-    // the target community mounts, so no intermediate Inbox frame is painted.
-    // Older transition callers may still arrive at neutral Home; repair those.
     if (selectedView === "home") {
       void goChannel(destination.channelId, { replace: true });
     }
@@ -321,7 +297,7 @@ export function AppShell() {
     isFollowing: isFollowingThread,
     followThread,
     unfollowThread,
-  } = useThreadFollows(identityQuery.data?.pubkey);
+  } = useThreadFollows(localStatePubkey);
 
   const {
     markAllChannelsRead,
@@ -343,7 +319,8 @@ export function AppShell() {
     muteThread,
     unmuteThread,
   } = useUnreadChannels(sidebarChannels, activeChannel, {
-    pubkey: identityQuery.data?.pubkey,
+    pubkey: localStatePubkey,
+    readStateSyncEnabled: automaticSyncEnabled,
     relayClient,
     relayUrl: communitiesHook.activeCommunity?.relayUrl,
     currentPubkey: identityQuery.data?.pubkey,
@@ -385,8 +362,6 @@ export function AppShell() {
     [markChannelRead],
   );
 
-  // Per-message read frontier (LP4 v3): effective(msg:<id>) folds through the
-  // channel, so a channel-read clears messages older than the top-level frontier.
   const getMessageReadAt = React.useCallback(
     (messageId: string) => getChannelReadAt(msgContextKey(messageId)),
     [getChannelReadAt],
@@ -405,7 +380,6 @@ export function AppShell() {
     channels,
   );
 
-  // Badge count consumes the shared NIP-RS read-state from useUnreadChannels.
   const { homeBadgeCount, homeBadgeCountExcludingHighPriority } =
     useHomeFeedNotificationState(
       homeFeedQuery.data,
@@ -426,8 +400,9 @@ export function AppShell() {
     );
 
   const dueReminderBadge = useDueReminderBadgeCount(
-    identityQuery.data?.pubkey,
-    notificationSettings.settings.homeBadgeEnabled,
+    localOwnerPolicy === "inactive" ? identityQuery.data?.pubkey : undefined,
+    localOwnerPolicy === "inactive" &&
+      notificationSettings.settings.homeBadgeEnabled,
   );
   const isNotifiedForThread = React.useCallback(
     (rootId: string) =>
@@ -463,7 +438,9 @@ export function AppShell() {
 
   const createChannelMutation = useCreateChannelMutation(),
     createForumMutation = useCreateChannelMutation();
-  const { applyCanvas, applyAgents } = useApplyTemplate();
+  const { applyCanvas, applyAgents } = useApplyTemplate({
+    enabled: localOwnerPolicy === "inactive",
+  });
   const openDmMutation = useOpenDmMutation();
   const hideDmMutation = useHideDmMutation();
   const {
@@ -546,8 +523,6 @@ export function AppShell() {
     [applyAgents, applyCanvas, createForumMutation, goChannel],
   );
 
-  // The channel browser can create either a stream or a forum depending on
-  // which section opened it. Route to the matching handler.
   const handleBrowseChannelCreate = React.useCallback(
     async (input: {
       name: string;
@@ -595,8 +570,6 @@ export function AppShell() {
     () => closeSettings(),
     [closeSettings],
   );
-  // Section switches rewrite the settings entry rather than stacking one
-  // history entry per section, so back always exits settings in one step.
   const handleSettingsSectionChange = React.useCallback(
     (section: SettingsSection) => {
       void goSettings(section, { replace: true });
@@ -615,12 +588,10 @@ export function AppShell() {
     unreadChannelIds,
     unreadChannelNotificationCount,
   });
-  // Dispatch `buzz://message` deep links into the router.
   useMessageDeepLinks();
-  const handleOpenCreateChannel = React.useCallback(
-    () => setIsCreateChannelOpen(true),
-    [],
-  );
+  const handleOpenCreateChannel = React.useCallback(() => {
+    if (communityControlsEnabled) setIsCreateChannelOpen(true);
+  }, [communityControlsEnabled]);
   React.useLayoutEffect(() => {
     if (settingsOpen) {
       return;
@@ -654,12 +625,14 @@ export function AppShell() {
       }
 
       if (key === "n" && event.shiftKey) {
+        if (!communityControlsEnabled) return;
         event.preventDefault();
         handleOpenCreateChannel();
         return;
       }
 
       if (key === "o" && event.shiftKey) {
+        if (!communityControlsEnabled) return;
         event.preventDefault();
         handleOpenBrowseChannels();
         return;
@@ -680,6 +653,7 @@ export function AppShell() {
     handleOpenBrowseChannels,
     handleOpenCreateChannel,
     handleOpenSearch,
+    communityControlsEnabled,
     goNewMessage,
     goHome,
     settingsOpen,
@@ -697,9 +671,10 @@ export function AppShell() {
     selectedView,
   });
   return (
-    <PreventSleepProvider>
+    <PreventSleepProvider enabled={localOwnerPolicy === "inactive"}>
       <AppShellTrayMenu
         channels={channels}
+        enabled={localOwnerPolicy === "inactive"}
         goChannel={goChannel}
         openCreateChannel={handleOpenCreateChannel}
       />
@@ -735,8 +710,11 @@ export function AppShell() {
             onOpenSettings: handleOpenSettings,
           }}
         >
-          <HuddleProvider>
-            <RemindMeLaterProvider pubkey={identityQuery.data?.pubkey}>
+          <HuddleProvider enabled={localOwnerPolicy === "inactive"}>
+            <RemindMeLaterProvider
+              enabled={localOwnerPolicy === "inactive"}
+              pubkey={identityQuery.data?.pubkey}
+            >
               <div
                 className="buzz-huddle-shell relative h-dvh overflow-hidden overscroll-none"
                 data-huddle-open={isHuddleDrawerOpen}
@@ -851,11 +829,19 @@ export function AppShell() {
                             onBackgroundClick={requestFocusedThreadClose}
                             onCreateChannelOpenChange={setIsCreateChannelOpen}
                             onOpenAddCommunity={addCommunityDialog.openDialog}
-                            onSendFeedback={() => setIsSendFeedbackOpen(true)}
+                            onSendFeedback={
+                              localOwnerPolicy === "inactive"
+                                ? () => setIsSendFeedbackOpen(true)
+                                : undefined
+                            }
                             onUpdateCommunity={communitiesHook.updateCommunity}
                             onRemoveCommunity={(id) =>
                               void handleRemoveCommunity(id)
                             }
+                            legacySurfacesEnabled={
+                              localOwnerPolicy === "inactive"
+                            }
+                            communityControlsEnabled={communityControlsEnabled}
                             onSwitchCommunity={handleSwitchCommunity}
                             onCreateAgent={() => requestOpenCreateAgent()}
                             selfPresenceStatus={presenceSession.currentStatus}
@@ -940,55 +926,65 @@ export function AppShell() {
                           />
                         </div>
                       )}
-                      <RequestedAgentCreateDialogs />
-                      <AgentManagementDialogs />
-                      <AppShellOverlays
-                        activeChannel={managedChannel}
-                        browseDialogType={browseDialogType}
-                        channels={channels}
-                        currentPubkey={identityQuery.data?.pubkey}
-                        isChannelManagementOpen={isChannelManagementOpen}
-                        isCreatingBrowseChannel={
-                          createChannelMutation.isPending ||
-                          createForumMutation.isPending
-                        }
-                        onBrowseChannelJoin={handleBrowseChannelJoin}
-                        onBrowseChannelCreate={handleBrowseChannelCreate}
-                        onBrowseDialogOpenChange={handleBrowseDialogOpenChange}
-                        onChannelManagementOpenChange={(open) => {
-                          setIsChannelManagementOpen(open);
-                          if (!open) {
-                            setManagedChannelId(null);
+                      {localOwnerPolicy === "inactive" ? (
+                        <>
+                          <RequestedAgentCreateDialogs />
+                          <AgentManagementDialogs />
+                        </>
+                      ) : null}
+                      {communityControlsEnabled ? (
+                        <AppShellOverlays
+                          activeChannel={managedChannel}
+                          browseDialogType={browseDialogType}
+                          channels={channels}
+                          currentPubkey={identityQuery.data?.pubkey}
+                          isChannelManagementOpen={isChannelManagementOpen}
+                          isCreatingBrowseChannel={
+                            createChannelMutation.isPending ||
+                            createForumMutation.isPending
                           }
-                        }}
-                        onDeleteActiveChannel={() => {
-                          setIsChannelManagementOpen(false);
-                          setManagedChannelId(null);
-                          void goHome({ replace: true });
-                        }}
-                        onSelectChannel={(channelId) => {
-                          void goChannel(channelId);
-                        }}
-                      />
-                      <SendFeedbackController
-                        onOpenChange={setIsSendFeedbackOpen}
-                        open={isSendFeedbackOpen}
-                      />
+                          onBrowseChannelJoin={handleBrowseChannelJoin}
+                          onBrowseChannelCreate={handleBrowseChannelCreate}
+                          onBrowseDialogOpenChange={
+                            handleBrowseDialogOpenChange
+                          }
+                          onChannelManagementOpenChange={(open) => {
+                            setIsChannelManagementOpen(open);
+                            if (!open) setManagedChannelId(null);
+                          }}
+                          onDeleteActiveChannel={() => {
+                            setIsChannelManagementOpen(false);
+                            setManagedChannelId(null);
+                            void goHome({ replace: true });
+                          }}
+                          onSelectChannel={(channelId) => {
+                            void goChannel(channelId);
+                          }}
+                        />
+                      ) : null}
+                      {localOwnerPolicy === "inactive" ? (
+                        <SendFeedbackController
+                          onOpenChange={setIsSendFeedbackOpen}
+                          open={isSendFeedbackOpen}
+                        />
+                      ) : null}
                     </AppProfilePanelProvider>
                   </SidebarProvider>
                 </div>
 
-                <div className="absolute inset-x-0 bottom-0 z-0 h-(--buzz-huddle-drawer-height)">
-                  <AppHuddleBar
-                    onOpenThread={(channelId, messageId) => {
-                      void goChannel(channelId, {
-                        messageId,
-                        threadRootId: messageId,
-                      });
-                    }}
-                    onVisibilityChange={setIsHuddleDrawerOpen}
-                  />
-                </div>
+                {localOwnerPolicy === "inactive" ? (
+                  <div className="absolute inset-x-0 bottom-0 z-0 h-(--buzz-huddle-drawer-height)">
+                    <AppHuddleBar
+                      onOpenThread={(channelId, messageId) => {
+                        void goChannel(channelId, {
+                          messageId,
+                          threadRootId: messageId,
+                        });
+                      }}
+                      onVisibilityChange={setIsHuddleDrawerOpen}
+                    />
+                  </div>
+                ) : null}
               </div>
             </RemindMeLaterProvider>
           </HuddleProvider>

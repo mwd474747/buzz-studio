@@ -24,5 +24,8 @@ export type ProfileAvatarEditorProps = {
   modeTabsContainer?: HTMLElement | null;
   onAnimatedPreviewActiveChange?: (active: boolean) => void;
   onAnimatedPreviewCaptionChange?: (caption: string | null) => void;
+  /** The signed local-owner flavor carries no camera entitlement or capture
+   * surface; ordinary/onboarding editors retain animated capture by default. */
+  animatedModeEnabled?: boolean;
   presentation?: AvatarEditorPresentation;
 };

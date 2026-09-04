@@ -5,54 +5,19 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-// nostr 0.36 alias — required for cross-version bridging with buzz-sdk.
-
 use crate::app_state::AppState;
 
-const DEFAULT_RELAY_WS_URL: &str = "ws://localhost:3000";
-
-// A reached-but-malformed 2xx body is NOT a connectivity failure, so this
-// message must never carry the "relay unreachable:" prefix the frontend
-// classifier keys on. Extracted to a const so a test can pin that contract.
 const MALFORMED_RESPONSE_MESSAGE: &str = "relay returned malformed response: not valid JSON";
-
-fn configured_env_var(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-pub fn relay_ws_url() -> String {
-    configured_env_var("BUZZ_RELAY_URL")
-        .or_else(|| option_env!("BUZZ_DESKTOP_BUILD_RELAY_URL").map(str::to_string))
-        .unwrap_or_else(|| DEFAULT_RELAY_WS_URL.to_string())
-}
-
-/// Read the workspace relay URL override, if set. Returns `None` when no
-/// override is active or when the mutex is poisoned (best-effort).
-fn workspace_relay_override(state: &AppState) -> Option<String> {
-    state
-        .relay_url_override
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
-}
-
-/// Returns the relay WebSocket URL, checking the workspace override first.
-/// Precedence: workspace override > env vars > build-time vars > default.
-pub fn relay_ws_url_with_override(state: &AppState) -> String {
-    workspace_relay_override(state).unwrap_or_else(relay_ws_url)
-}
-
-/// Returns the relay HTTP API base URL, checking the workspace override first.
-/// Precedence: workspace override > env vars > build-time vars > default.
-pub fn relay_api_base_url_with_override(state: &AppState) -> String {
-    match workspace_relay_override(state) {
-        Some(url) => relay_http_base_url(&url),
-        None => relay_api_base_url(),
-    }
-}
+#[path = "relay/config.rs"]
+mod config;
+#[path = "relay/response.rs"]
+mod response;
+pub use config::{
+    relay_api_base_url_with_override, relay_http_base_url, relay_ws_url, relay_ws_url_with_override,
+};
+use response::{
+    read_bounded_response, MAX_RELAY_ERROR_RESPONSE_BYTES, MAX_RELAY_JSON_RESPONSE_BYTES,
+};
 
 /// Selects the relay a managed agent should use for a relay operation.
 ///
@@ -66,34 +31,9 @@ pub fn relay_api_base_url_with_override(state: &AppState) -> String {
 /// all agent relay resolution flows through. Resolving at read-time also means
 /// a stale stored value can never leak into reconcile, spawn, or profile sync.
 /// Uniform for both Local and Provider backends.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn effective_agent_relay_url(_record_relay: &str, workspace_relay: &str) -> String {
     workspace_relay.to_string()
-}
-
-pub fn relay_http_base_url(relay_url: &str) -> String {
-    let trimmed = relay_url.trim().trim_end_matches('/');
-
-    if let Some(suffix) = trimmed.strip_prefix("wss://") {
-        return format!("https://{}", suffix);
-    }
-
-    if let Some(suffix) = trimmed.strip_prefix("ws://") {
-        return format!("http://{}", suffix);
-    }
-
-    trimmed.to_string()
-}
-
-pub fn relay_api_base_url() -> String {
-    if let Some(base) = configured_env_var("BUZZ_RELAY_HTTP") {
-        return base.trim_end_matches('/').to_string();
-    }
-
-    if let Some(base) = option_env!("BUZZ_DESKTOP_BUILD_RELAY_HTTP") {
-        return base.trim().trim_end_matches('/').to_string();
-    }
-
-    relay_http_base_url(&relay_ws_url())
 }
 
 // ── NIP-98 HTTP auth ────────────────────────────────────────────────────────
@@ -104,7 +44,7 @@ pub fn build_nip98_auth_header(
     body: &[u8],
     state: &AppState,
 ) -> Result<String, String> {
-    let keys = state.keys.lock().map_err(|error| error.to_string())?;
+    let keys = state.signing_keys()?;
     build_nip98_auth_header_for_keys(&keys, method, url, body)
 }
 
@@ -224,10 +164,8 @@ pub(crate) async fn parse_json_response<T: DeserializeOwned>(
     // "relay unreachable:" bucket so it surfaces loudly instead of being treated
     // as a transient unreachable-relay condition. The reqwest error detail is
     // dropped because it contains the raw URL.
-    response
-        .json::<T>()
-        .await
-        .map_err(|_| MALFORMED_RESPONSE_MESSAGE.to_string())
+    let body = read_bounded_response(response, MAX_RELAY_JSON_RESPONSE_BYTES).await?;
+    serde_json::from_slice::<T>(&body).map_err(|_| MALFORMED_RESPONSE_MESSAGE.to_string())
 }
 
 /// Extract the `retry in Ns` hint from a rate-limit error string.
@@ -258,7 +196,11 @@ pub async fn relay_error_message(response: reqwest::Response) -> String {
     }
 
     // Real relay error: extract the structured message field if available.
-    let body = response.text().await.unwrap_or_default();
+    let body = read_bounded_response(response, MAX_RELAY_ERROR_RESPONSE_BYTES)
+        .await
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
 
     // 429 Too Many Requests → typed `relay rate-limited:` prefix so the TS
     // client can activate the rate-limit gate without confusing it with a
@@ -317,6 +259,7 @@ pub async fn query_relay_at(
     api_base_url: &str,
     filters: &[serde_json::Value],
 ) -> Result<Vec<nostr::Event>, String> {
+    crate::local_owner_profile::require_relay_http_base(api_base_url)?;
     crate::relay_admission::wait_for_rate_limit().await;
     let url = format!("{}/query", api_base_url);
     let body_bytes =
@@ -347,6 +290,8 @@ pub async fn query_relay_at_with_keys(
     keys: &Keys,
     auth_tag: Option<&str>,
 ) -> Result<Vec<nostr::Event>, String> {
+    crate::local_owner_profile::require_explicit_signer(state, keys)?;
+    crate::local_owner_profile::require_relay_http_base(api_base_url)?;
     crate::relay_admission::wait_for_rate_limit().await;
     let url = format!("{}/query", api_base_url);
     let body_bytes =
@@ -398,6 +343,7 @@ pub fn parse_command_response<T: DeserializeOwned>(message: &str) -> Result<T, S
 /// `buzz-sdk` uses `nostr 0.36` while the desktop crate uses `nostr 0.37`. Cross-version
 /// bridging is done via hex-encoded public keys and raw tag slices — both versions share the
 /// same wire format.
+#[cfg(not(feature = "local-owner-profile"))]
 fn build_profile_event(
     agent_keys: &nostr::Keys,
     display_name: &str,
@@ -437,6 +383,7 @@ fn build_profile_event(
 ///
 /// The agent signs its own profile event and the NIP-98 HTTP-auth event, so no
 /// API token is required.
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn sync_managed_agent_profile(
     state: &AppState,
     relay_url: &str,
@@ -445,6 +392,7 @@ pub async fn sync_managed_agent_profile(
     avatar_url: Option<&str>,
     auth_tag: Option<&str>, // NIP-OA auth tag JSON
 ) -> Result<(), String> {
+    crate::local_owner_profile::require_explicit_signer(state, agent_keys)?;
     crate::relay_admission::wait_for_rate_limit().await;
     // Build a signed kind:0 profile event (with optional NIP-OA auth tag).
     let event = build_profile_event(agent_keys, display_name, avatar_url, auth_tag)?;
@@ -490,6 +438,7 @@ pub async fn sync_managed_agent_profile(
 ///
 /// Returns the parsed profile content (display_name, picture) if a kind:0 event
 /// exists for the given pubkey, or `None` if no profile is published.
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn query_agent_profile(
     state: &AppState,
     relay_url: &str,
@@ -525,6 +474,7 @@ pub async fn query_agent_profile(
 
 /// Parsed fields from a kind:0 profile event.
 #[derive(Debug, Clone)]
+#[cfg(not(feature = "local-owner-profile"))]
 pub struct AgentProfileInfo {
     pub display_name: Option<String>,
     pub picture: Option<String>,
@@ -533,21 +483,23 @@ pub struct AgentProfileInfo {
 // ── Signed-event submission ─────────────────────────────────────────────────
 
 mod submit;
-pub use submit::{
-    submit_event, submit_event_at_with_keys, submit_signed_event_at_with_keys, SubmitEventResponse,
-};
+#[cfg(any(not(feature = "local-owner-profile"), test))]
+pub use submit::submit_signed_event_at_with_keys;
+pub use submit::{submit_event, submit_event_at_with_keys, SubmitEventResponse};
 
 /// Sign an event with explicit keys and POST it to `/events` with NIP-98 auth.
 ///
 /// Managed-agent flows use this to publish as the agent itself while still
 /// including the stored NIP-OA auth tag when the relay requires owner-backed
 /// membership.
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn submit_event_with_keys(
     builder: nostr::EventBuilder,
     state: &AppState,
     keys: &Keys,
     auth_tag: Option<&str>,
 ) -> Result<SubmitEventResponse, String> {
+    crate::local_owner_profile::require_explicit_signer(state, keys)?;
     let event = builder
         .sign_with_keys(keys)
         .map_err(|e| format!("failed to sign event: {e}"))?;
@@ -555,15 +507,18 @@ pub async fn submit_event_with_keys(
 }
 
 /// POST an already-signed event using the same explicit identity for NIP-98.
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn submit_signed_event_with_keys(
     event: &nostr::Event,
     state: &AppState,
     keys: &Keys,
     auth_tag: Option<&str>,
 ) -> Result<SubmitEventResponse, String> {
+    crate::local_owner_profile::require_explicit_signer(state, keys)?;
     if event.pubkey != keys.public_key() {
         return Err("signed event does not match the publishing identity".to_string());
     }
+    crate::local_owner_profile::require_native_interaction_event(event)?;
     crate::relay_admission::wait_for_rate_limit().await;
     let url = format!("{}/events", relay_api_base_url_with_override(state));
     let body_bytes = event.as_json().into_bytes();
@@ -601,6 +556,10 @@ pub async fn submit_signed_event_with_keys(
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[path = "relay_local_owner_tests.rs"]
+mod local_owner_tests;
+
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 mod tests {
     use super::{
         build_profile_event, classify_intercepted_response, effective_agent_relay_url,

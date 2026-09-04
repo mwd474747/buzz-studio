@@ -55,6 +55,13 @@ jobs:
               - 'pnpm-lock.yaml'
             desktop-rust:
               - 'desktop/src-tauri/**'
+              - '.release/local-owner-profile.json'
+              - '.release/local-owner-ratification.json'
+              - '.release/LOCAL-OWNER-RATIFICATION.md'
+              - '.release/LOCAL-OWNER-MACOS-SIGNING-HOLD.md'
+              - 'scripts/build-local-owner-macos.sh'
+              - 'scripts/test-local-owner-release-contract.sh'
+              - 'Justfile'
             web:
               - 'scripts/check-file-sizes-core.mjs'
               - 'scripts/check-file-sizes-core.test.mjs'
@@ -1041,6 +1048,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Local-owner desktop release contract
+        run: scripts/test-local-owner-release-contract.sh
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:

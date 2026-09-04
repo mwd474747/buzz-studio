@@ -14,7 +14,10 @@ import {
 import { ChannelMuteSyncManager } from "./channelMutesSync";
 import type { RemoteMutes } from "./channelMutesSync";
 
-export function useChannelMutes(pubkey: string | undefined): {
+export function useChannelMutes(
+  pubkey: string | undefined,
+  syncEnabled = true,
+): {
   mutedChannelIds: Set<string>;
   muteChannel: (channelId: string) => void;
   unmuteChannel: (channelId: string) => void;
@@ -40,12 +43,13 @@ export function useChannelMutes(pubkey: string | undefined): {
     setStore(readChannelMutesStore(pubkey));
     lastAppliedRemoteTs.current = 0;
     lastAppliedEventId.current = "";
+    if (!syncEnabled) return;
     managerRef.current = new ChannelMuteSyncManager(pubkey);
     return () => {
       managerRef.current?.destroy();
       managerRef.current = null;
     };
-  }, [pubkey]);
+  }, [pubkey, syncEnabled]);
 
   React.useEffect(() => {
     if (!pubkey) {
@@ -86,7 +90,7 @@ export function useChannelMutes(pubkey: string | undefined): {
   );
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let cancelled = false;
     void managerRef.current?.fetchRemoteMutes().then((remote) => {
       if (cancelled) return;
@@ -102,10 +106,10 @@ export function useChannelMutes(pubkey: string | undefined): {
     return () => {
       cancelled = true;
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, applyRemote, syncEnabled]);
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let unsub: (() => Promise<void>) | null = null;
     let cancelled = false;
     void managerRef.current
@@ -124,10 +128,10 @@ export function useChannelMutes(pubkey: string | undefined): {
       cancelled = true;
       if (unsub) void unsub();
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, applyRemote, syncEnabled]);
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let cancelled = false;
     const unsub = relayClient.subscribeToReconnects(() => {
       void managerRef.current?.fetchRemoteMutes().then((remote) => {
@@ -145,7 +149,7 @@ export function useChannelMutes(pubkey: string | undefined): {
       cancelled = true;
       unsub();
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, applyRemote, syncEnabled]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: store.channels is the relevant dep — the outer store identity can change without channels changing (e.g., on reconnect writes)
   const mutedChannelIds = React.useMemo(

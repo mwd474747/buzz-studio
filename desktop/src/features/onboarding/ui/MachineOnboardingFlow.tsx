@@ -11,6 +11,7 @@ import {
 import type { IdentityStorage } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
+import { useLocalOwnerPolicy } from "../useLocalOwnerPolicy";
 import { BackupStep } from "./BackupStep";
 import { DefaultConfigStep } from "./DefaultConfigStep";
 import { DownloadKeyStep } from "./DownloadKeyStep";
@@ -92,6 +93,8 @@ export function MachineOnboardingFlow({
   >("forward");
   const [returningFromSecurity, setReturningFromSecurity] =
     React.useState(false);
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const identityReplacementAllowed = localOwnerPolicy === "inactive";
   // Owned here so switching between the yellow onboarding view and the dark
   // security subview keeps the created backup, password, and test progress.
   const backupSession = useEncryptedBackupSession();
@@ -126,6 +129,12 @@ export function MachineOnboardingFlow({
   }, [queryClient]);
 
   const replaceLostIdentity = React.useCallback(async () => {
+    if (!identityReplacementAllowed) {
+      setError(
+        "Identity replacement is unavailable. Re-import the existing owner key or relaunch Buzz.",
+      );
+      return;
+    }
     const confirmed = window.confirm(
       "This will create a new identity and abandon your previous key. This cannot be undone. Continue?",
     );
@@ -149,7 +158,7 @@ export function MachineOnboardingFlow({
     } finally {
       setIsPending(false);
     }
-  }, [queryClient]);
+  }, [identityReplacementAllowed, queryClient]);
 
   const importExistingIdentity = React.useCallback(
     async (nsec: string, password?: string) => {
@@ -280,9 +289,13 @@ export function MachineOnboardingFlow({
                 <p className="mt-5 max-w-[440px] text-sm leading-6 text-foreground/80">
                   {keyImportStage === "backup-password"
                     ? "Enter your backup password to unlock your key and restore your identity."
-                    : identityLost
-                      ? "Your identity is no longer in the system keyring. Re-import your nsec to restore it."
-                      : "If you already have a Buzz account, enter your private key below to get started."}
+                    : identityLost && localOwnerPolicy === "active"
+                      ? "This installation is pinned to its existing owner identity. Re-import the matching nsec to restore it; creating a replacement identity is disabled."
+                      : identityLost && localOwnerPolicy !== "inactive"
+                        ? "Re-import your existing nsec to restore this identity. Identity replacement stays disabled until Buzz can confirm this installation's policy."
+                        : identityLost
+                          ? "Your identity is no longer in the system keyring. Re-import your nsec to restore it."
+                          : "If you already have a Buzz account, enter your private key below to get started."}
                 </p>
               </motion.div>
               <div className="buzz-onboarding-key-import-position w-full">
@@ -295,6 +308,7 @@ export function MachineOnboardingFlow({
                   }
                   onImport={importExistingIdentity}
                   onStageChange={setKeyImportStage}
+                  showBack={!identityLost || identityReplacementAllowed}
                   variant="spotlight"
                 />
               </div>

@@ -15,6 +15,7 @@ export function useWelcomeKickoffEntrance(
   activeChannel: Channel | null,
   resolvedMessages: readonly RelayEvent[],
   threadReplyEvents: readonly RelayEvent[],
+  enabled = true,
 ) {
   const welcomeKickoffEvents = React.useMemo(
     () => [...resolvedMessages, ...threadReplyEvents],
@@ -37,6 +38,7 @@ export function useWelcomeKickoffEntrance(
     activeChannel,
     welcomeKickoffEvents,
     handleKickoffOpenerPosted,
+    enabled,
   );
 
   return { entranceMessageId, handleEntranceComplete };

@@ -17,6 +17,7 @@ const noopSetResolver = () => {};
 export function useReadState(
   pubkey: string | undefined,
   relayClient: RelayClient | undefined,
+  syncEnabled = true,
 ) {
   const [readStateVersion, forceUpdate] = React.useReducer(
     (x: number) => x + 1,
@@ -33,7 +34,7 @@ export function useReadState(
     if (!pubkey || !relayClient) return;
 
     let isCancelled = false;
-    const manager = new ReadStateManager(pubkey, relayClient);
+    const manager = new ReadStateManager(pubkey, relayClient, syncEnabled);
     managerRef.current = manager;
 
     const unsubscribe = manager.subscribe(() => {
@@ -52,7 +53,7 @@ export function useReadState(
       manager.destroy();
       managerRef.current = null;
     };
-  }, [pubkey, relayClient]);
+  }, [pubkey, relayClient, syncEnabled]);
 
   const getEffectiveTimestamp = React.useCallback(
     (contextId: string): number | null => {

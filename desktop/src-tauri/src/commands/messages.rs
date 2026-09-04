@@ -1,21 +1,31 @@
-use nostr::{Event, EventId, Keys, PublicKey};
-use tauri::{AppHandle, State};
+use nostr::EventId;
+#[cfg(not(feature = "local-owner-profile"))]
+use nostr::{Event, Keys, PublicKey};
+#[cfg(not(feature = "local-owner-profile"))]
+use tauri::AppHandle;
+use tauri::State;
 
+mod feed;
 mod forum;
 
+use feed::feed_item_from_event;
 use forum::{forum_message_from_event, forum_reply_from_event};
 
 use crate::{
     app_state::AppState,
     events,
-    managed_agents::{find_managed_agent_mut, load_managed_agents, ManagedAgentRecord},
     models::{
         FeedItemInfo, FeedMeta, FeedResponse, FeedSections, ForumMessageInfo, ForumPostsResponse,
         ForumThreadReplyInfo, ForumThreadResponse, SearchResponse, SendChannelMessageResponse,
         ThreadRepliesResponse,
     },
     nostr_convert,
-    relay::{query_relay, submit_event, submit_event_with_keys},
+    relay::{query_relay, submit_event},
+};
+#[cfg(not(feature = "local-owner-profile"))]
+use crate::{
+    managed_agents::{find_managed_agent_mut, load_managed_agents, ManagedAgentRecord},
+    relay::submit_event_with_keys,
 };
 
 // ── Reads (pure-nostr) ──────────────────────────────────────────────────────
@@ -50,8 +60,6 @@ pub async fn get_feed(
 ) -> Result<FeedResponse, String> {
     let cap = limit.unwrap_or(50).min(100);
 
-    // Parse types filter — if absent, run all sub-queries.
-    // Comma-separated: e.g. "mentions,needs_action".
     let want_mentions = types
         .as_deref()
         .map(|t| t.split(',').any(|s| s.trim() == "mentions"))
@@ -547,6 +555,7 @@ pub async fn send_channel_message(
     let emoji = emoji_tags.unwrap_or_default();
     let mention_refs_only = mention_tags.unwrap_or_default();
     let kind_num = kind.unwrap_or(buzz_core_pkg::kind::KIND_STREAM_MESSAGE);
+    crate::local_owner_profile::require_interaction_event_kind(kind_num)?;
 
     let mut resolved_root: Option<String> = None;
 
@@ -612,6 +621,7 @@ pub async fn send_channel_message(
     })
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn event_has_client_marker(event: &Event, marker: &str) -> bool {
     event.tags.iter().any(|tag| {
         let parts = tag.as_slice();
@@ -619,6 +629,7 @@ fn event_has_client_marker(event: &Event, marker: &str) -> bool {
     })
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 async fn find_managed_agent_channel_message_by_marker(
     state: &AppState,
     agent_pubkey: Option<&str>,
@@ -669,6 +680,7 @@ async fn find_managed_agent_channel_message_by_marker(
     Ok(None)
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn marker_author_for_scope<'a>(
     marker_scope: Option<&str>,
     agent_pubkey: Option<&'a str>,
@@ -683,6 +695,7 @@ fn marker_author_for_scope<'a>(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn has_managed_agent_channel_message_marker(
     channel_id: String,
     marker: String,
@@ -707,6 +720,7 @@ pub async fn has_managed_agent_channel_message_marker(
         .map(|event| event.is_some())
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn stored_managed_agent_auth_tag(auth_tag: Option<&str>) -> Option<String> {
     auth_tag
         .map(str::trim)
@@ -714,6 +728,7 @@ fn stored_managed_agent_auth_tag(auth_tag: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn legacy_managed_agent_auth_tag(
     owner_keys: &Keys,
     agent_pubkey: &PublicKey,
@@ -727,6 +742,7 @@ fn legacy_managed_agent_auth_tag(
         .map_err(|error| format!("failed to compute managed agent auth tag: {error}"))
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn managed_agent_submission_auth_tag(
     record: &ManagedAgentRecord,
     state: &AppState,
@@ -736,10 +752,11 @@ fn managed_agent_submission_auth_tag(
         return Ok(Some(auth_tag));
     }
 
-    let owner_keys = state.keys.lock().map_err(|error| error.to_string())?;
+    let owner_keys = state.signing_keys()?;
     legacy_managed_agent_auth_tag(&owner_keys, agent_pubkey)
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn build_managed_agent_channel_message(
     channel_id: uuid::Uuid,
     content: &str,
@@ -762,6 +779,7 @@ fn build_managed_agent_channel_message(
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn send_managed_agent_channel_message(
     agent_pubkey: String,
     channel_id: String,
@@ -774,6 +792,7 @@ pub async fn send_managed_agent_channel_message(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SendChannelMessageResponse, String> {
+    crate::local_owner_profile::deny_agent_activation("managed-agent message send")?;
     let channel_uuid = uuid::Uuid::parse_str(&channel_id)
         .map_err(|_| format!("invalid channel UUID: {channel_id}"))?;
     let trimmed = content.trim();
@@ -920,6 +939,7 @@ pub async fn remove_reaction(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn edit_message(
     channel_id: String,
     event_id: String,
@@ -957,6 +977,7 @@ pub async fn edit_message(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn delete_message(
     channel_id: String,
     event_id: String,
@@ -970,38 +991,6 @@ pub async fn delete_message(
     Ok(())
 }
 
-// ── Local helpers ───────────────────────────────────────────────────────────
-
-fn channel_id_from_tags(ev: &nostr::Event) -> Option<String> {
-    ev.tags.iter().find_map(|t| {
-        let s = t.as_slice();
-        if s.len() >= 2 && s[0] == "h" {
-            Some(s[1].clone())
-        } else {
-            None
-        }
-    })
-}
-
-fn tags_to_vec(ev: &nostr::Event) -> Vec<Vec<String>> {
-    ev.tags.iter().map(|t| t.as_slice().to_vec()).collect()
-}
-
-fn feed_item_from_event(ev: &nostr::Event, category: &str) -> FeedItemInfo {
-    let channel_id = channel_id_from_tags(ev);
-    FeedItemInfo {
-        id: ev.id.to_hex(),
-        kind: ev.kind.as_u16() as u32,
-        pubkey: ev.pubkey.to_hex(),
-        content: ev.content.clone(),
-        created_at: ev.created_at.as_secs(),
-        channel_id,
-        channel_name: String::new(),
-        channel_type: None,
-        tags: tags_to_vec(ev),
-        category: category.to_string(),
-    }
-}
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 #[path = "messages_tests.rs"]
 mod tests;

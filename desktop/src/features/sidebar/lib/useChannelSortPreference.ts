@@ -35,6 +35,7 @@ export function useChannelSortPreference(
   pubkey: string | undefined,
   relayUrl?: string,
   liveSectionIds?: string[],
+  syncEnabled = true,
 ): {
   sortModeFor: (group: ChannelSortGroupKey) => ChannelSortMode;
   setSortModeFor: (group: ChannelSortGroupKey, mode: ChannelSortMode) => void;
@@ -58,12 +59,14 @@ export function useChannelSortPreference(
     setStore(readChannelSortStore(pubkey, relayUrl));
     lastAppliedRemoteTs.current = 0;
     lastAppliedEventId.current = "";
-    managerRef.current = new ChannelSortSyncManager(pubkey);
+    managerRef.current = syncEnabled
+      ? new ChannelSortSyncManager(pubkey)
+      : null;
     return () => {
       managerRef.current?.destroy();
       managerRef.current = null;
     };
-  }, [pubkey, relayUrl]);
+  }, [pubkey, relayUrl, syncEnabled]);
 
   React.useEffect(() => {
     if (!pubkey) return;
@@ -101,7 +104,7 @@ export function useChannelSortPreference(
   );
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let cancelled = false;
     void managerRef.current?.fetchRemoteSortPrefs().then((remote) => {
       if (cancelled) return;
@@ -117,10 +120,10 @@ export function useChannelSortPreference(
     return () => {
       cancelled = true;
     };
-  }, [pubkey, relayUrl, applyRemote]);
+  }, [pubkey, relayUrl, applyRemote, syncEnabled]);
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let unsub: (() => Promise<void>) | null = null;
     let cancelled = false;
     void managerRef.current
@@ -139,10 +142,10 @@ export function useChannelSortPreference(
       cancelled = true;
       if (unsub) void unsub();
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, applyRemote, syncEnabled]);
 
   React.useEffect(() => {
-    if (!pubkey) return;
+    if (!pubkey || !syncEnabled) return;
     let cancelled = false;
     const unsub = relayClient.subscribeToReconnects(() => {
       void managerRef.current?.fetchRemoteSortPrefs().then((remote) => {
@@ -160,7 +163,7 @@ export function useChannelSortPreference(
       cancelled = true;
       unsub();
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, applyRemote, syncEnabled]);
 
   const sortModeFor = React.useCallback(
     (group: ChannelSortGroupKey) => sortModeForGroup(store, group),

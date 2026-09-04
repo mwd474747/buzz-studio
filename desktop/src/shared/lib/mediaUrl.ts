@@ -231,11 +231,33 @@ async function fetchProxyPort(): Promise<number | null> {
   return cachedPort;
 }
 
+async function initializeMediaTransport(): Promise<number | null> {
+  try {
+    const localOwnerProfile = await invoke<{
+      relay_ws_url: string;
+    } | null>("get_local_owner_profile");
+    if (localOwnerProfile !== null) {
+      // The governed product has no localhost media-proxy service. Its custom
+      // buzz-media protocol and native byte reader are the only media paths.
+      // Retain the pinned relay origin for download eligibility and for
+      // distinguishing relay media from unsupported external sources.
+      const publishRelayOrigin = beginRelayOriginFetch();
+      const relayUrl = new URL(localOwnerProfile.relay_ws_url);
+      relayUrl.protocol = relayUrl.protocol === "wss:" ? "https:" : "http:";
+      publishRelayOrigin(canonicalOrigin(relayUrl.toString()));
+      return null;
+    }
+  } catch {
+    // A non-Tauri/test environment follows the ordinary best-effort path.
+  }
+  return fetchProxyPort();
+}
+
 /** Eagerly fetch the port at module load so it's ready by first render. */
 // The try/catch inside fetchProxyPort handles non-Tauri environments gracefully
 // (invoke will throw, we retry until timeout, then give up — no side effects).
 if (typeof window !== "undefined") {
-  portPromise = fetchProxyPort();
+  portPromise = initializeMediaTransport();
 }
 
 /**
@@ -319,7 +341,7 @@ export function rewriteRelayUrl(url: string): string {
   }
 
   if (!portPromise && typeof window !== "undefined") {
-    portPromise = fetchProxyPort();
+    portPromise = initializeMediaTransport();
   }
 
   return `buzz-media://localhost/media/${m[1]}`;

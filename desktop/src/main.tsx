@@ -8,6 +8,7 @@ import { UpdaterProvider } from "@/features/settings/hooks/UpdaterProvider";
 import { migrateLegacyCommunityStorageBeforeRender } from "@/features/communities/legacyCommunityStorage";
 import { CommunitiesProvider } from "@/features/communities/useCommunities";
 import { CommunityOnboardingProvider } from "@/features/onboarding/communityOnboarding";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 import { EmojiBurstProvider } from "@/shared/ui/EmojiBurstProvider";
 import { PoofBurstProvider } from "@/shared/ui/PoofBurstProvider";
@@ -81,7 +82,7 @@ function renderApp() {
                 <PoofBurstProvider>
                   <UpdaterProvider>
                     <App />
-                    <NostrBindConsentDialog />
+                    <OrdinaryNostrBindConsentDialog />
                   </UpdaterProvider>
                   <Toaster />
                 </PoofBurstProvider>
@@ -92,6 +93,12 @@ function renderApp() {
       </CommunitiesProvider>
     </React.StrictMode>,
   );
+}
+
+function OrdinaryNostrBindConsentDialog() {
+  return useLocalOwnerPolicy() === "inactive" ? (
+    <NostrBindConsentDialog />
+  ) : null;
 }
 
 async function installE2eBridgeIfConfigured() {

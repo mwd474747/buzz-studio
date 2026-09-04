@@ -30,6 +30,8 @@ type NostrKeyImportFormProps = {
   onBack: () => void;
   onImport: (nsec: string, password?: string) => Promise<void>;
   onStageChange?: (stage: NostrKeyImportStage) => void;
+  /** Hide identity-level back/replacement actions while preserving password-step Back. */
+  showBack?: boolean;
   /** "spotlight" is the first-launch treatment: glowy centered input, no drop zone, pill buttons. */
   variant?: "default" | "spotlight";
 };
@@ -48,6 +50,7 @@ export function NostrKeyImportForm({
   onBack,
   onImport,
   onStageChange,
+  showBack = true,
   variant = "default",
 }: NostrKeyImportFormProps) {
   const [nsecInput, setNsecInput] = React.useState("");
@@ -515,19 +518,21 @@ export function NostrKeyImportForm({
           )}
         </Button>
 
-        <Button
-          className={
-            variant === "spotlight"
-              ? ONBOARDING_SECONDARY_CTA_CLASS
-              : "h-10 w-full text-muted-foreground hover:text-accent-foreground"
-          }
-          disabled={isImporting}
-          onClick={handleBack}
-          type="button"
-          variant="ghost"
-        >
-          {isPasswordStage ? "Back" : backLabel}
-        </Button>
+        {isPasswordStage || showBack ? (
+          <Button
+            className={
+              variant === "spotlight"
+                ? ONBOARDING_SECONDARY_CTA_CLASS
+                : "h-10 w-full text-muted-foreground hover:text-accent-foreground"
+            }
+            disabled={isImporting}
+            onClick={handleBack}
+            type="button"
+            variant="ghost"
+          >
+            {isPasswordStage ? "Back" : backLabel}
+          </Button>
+        ) : null}
       </OnboardingFooter>
     </form>
   );

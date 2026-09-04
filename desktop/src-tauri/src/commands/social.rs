@@ -1,18 +1,21 @@
+#[cfg(not(feature = "local-owner-profile"))]
 use std::collections::{HashMap, HashSet};
 
+#[cfg(not(feature = "local-owner-profile"))]
 use nostr::{Event, EventId, Tag};
 use tauri::State;
 
+#[cfg(not(feature = "local-owner-profile"))]
+use crate::models::{NoteReactionSummary, UserNoteInfo, UserNotesResponse};
 use crate::{
     app_state::AppState,
     events,
-    models::{
-        ContactEntry, ContactListResponse, NoteReactionSummary, UserNoteInfo, UserNotesResponse,
-    },
+    models::{ContactEntry, ContactListResponse},
     nostr_convert,
     relay::{query_relay, submit_event, SubmitEventResponse},
 };
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn e_tag_id(tag: &Tag) -> Option<&String> {
     let values = tag.as_slice();
     match (values.first().map(String::as_str), values.get(1)) {
@@ -21,6 +24,7 @@ fn e_tag_id(tag: &Tag) -> Option<&String> {
     }
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn deleted_event_ids(events: &[Event]) -> HashSet<String> {
     events
         .iter()
@@ -28,10 +32,12 @@ fn deleted_event_ids(events: &[Event]) -> HashSet<String> {
         .collect()
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn last_event_tag_id(event: &Event) -> Option<String> {
     event.tags.iter().rev().find_map(e_tag_id).cloned()
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn last_matching_event_tag_id(event: &Event, targets: &HashSet<String>) -> Option<String> {
     event
         .tags
@@ -42,6 +48,7 @@ fn last_matching_event_tag_id(event: &Event, targets: &HashSet<String>) -> Optio
         .cloned()
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn reaction_emoji(event: &Event) -> String {
     if event.content.is_empty() {
         "+".to_string()
@@ -52,6 +59,7 @@ fn reaction_emoji(event: &Event) -> String {
 
 /// Publish a global kind:1 text note (NIP-01).
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn publish_note(
     content: String,
     reply_to: Option<String>,
@@ -122,6 +130,7 @@ pub async fn set_contact_list(
 
 /// Fetch global NIP-01 kind:1 notes without an author filter.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn get_global_notes(
     limit: Option<u32>,
     before: Option<i64>,
@@ -143,6 +152,7 @@ pub async fn get_global_notes(
     Ok(nostr_convert::user_notes_from_events(&events))
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn validate_note_id(note_id: &str) -> Result<(), String> {
     if note_id.len() == 64 && note_id.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(())
@@ -153,6 +163,7 @@ fn validate_note_id(note_id: &str) -> Result<(), String> {
 
 /// Fetch a single NIP-01 kind:1 note by event id.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn get_note(
     note_id: String,
     state: State<'_, AppState>,
@@ -174,10 +185,12 @@ pub async fn get_note(
         .next())
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 const MAX_NOTE_IDS: usize = 200;
 
 /// Fetch and fold kind:7 reactions for visible Pulse notes.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn get_note_reactions(
     note_ids: Vec<String>,
     state: State<'_, AppState>,
@@ -263,6 +276,7 @@ pub async fn get_note_reactions(
 
 /// Fetch notes liked by a user, excluding deleted reaction events.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn get_liked_notes(
     author_pubkey: String,
     limit: Option<u32>,
@@ -345,10 +359,12 @@ pub async fn get_liked_notes(
 }
 
 /// Maximum number of pubkeys per timeline request to keep filter size bounded.
+#[cfg(not(feature = "local-owner-profile"))]
 const MAX_TIMELINE_PUBKEYS: usize = 100;
 
 /// Fetch notes for multiple pubkeys with a single multi-author query.
 #[tauri::command]
+#[cfg(not(feature = "local-owner-profile"))]
 pub async fn get_notes_timeline(
     pubkeys: Vec<String>,
     limit_per_user: Option<u32>,
@@ -404,7 +420,7 @@ pub async fn get_notes_timeline(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 mod tests {
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Tag};

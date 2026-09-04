@@ -26,12 +26,13 @@ function toManagedBackend(
   return { type: "provider", id: backend.id, config: {} };
 }
 
-export function useApplyTemplate() {
+export function useApplyTemplate(options?: { enabled?: boolean }) {
+  const enabled = options?.enabled ?? true;
   const queryClient = useQueryClient();
-  const channelTemplatesQuery = useChannelTemplatesQuery();
-  const acpRuntimesQuery = useAvailableAcpRuntimes();
-  const personasQuery = usePersonasQuery();
-  const teamsQuery = useTeamsQuery();
+  const channelTemplatesQuery = useChannelTemplatesQuery({ enabled });
+  const acpRuntimesQuery = useAvailableAcpRuntimes({ enabled });
+  const personasQuery = usePersonasQuery({ enabled });
+  const teamsQuery = useTeamsQuery({ enabled });
   const { lastRuntimeId } = useLastRuntime();
 
   async function applyCanvas(
@@ -39,7 +40,7 @@ export function useApplyTemplate() {
     channelId: string,
     channelName: string,
   ) {
-    if (!templateId) return;
+    if (!enabled || !templateId) return;
     const template = channelTemplatesQuery.data?.find(
       (t) => t.id === templateId,
     );
@@ -58,7 +59,7 @@ export function useApplyTemplate() {
     templateId: string | undefined,
     channelId: string,
   ) {
-    if (!templateId) return;
+    if (!enabled || !templateId) return;
     const template = channelTemplatesQuery.data?.find(
       (t) => t.id === templateId,
     );

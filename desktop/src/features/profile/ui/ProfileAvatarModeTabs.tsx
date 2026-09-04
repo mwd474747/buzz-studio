@@ -20,6 +20,7 @@ type ProfileAvatarModeTabsProps = {
   onModeChange: (mode: AvatarMode) => void;
   presentation: AvatarEditorPresentation;
   portalContainer?: HTMLElement | null;
+  animatedModeEnabled?: boolean;
 };
 
 export function ProfileAvatarModeTabs({
@@ -28,8 +29,12 @@ export function ProfileAvatarModeTabs({
   onModeChange,
   presentation,
   portalContainer,
+  animatedModeEnabled = true,
 }: ProfileAvatarModeTabsProps) {
   const isOnboardingModal = presentation === "onboarding-modal";
+  const modes = animatedModeEnabled
+    ? MODE_TAB_ORDER
+    : MODE_TAB_ORDER.filter((mode) => mode !== "animated");
   const tabs = (
     <Tabs
       className={isOnboardingModal ? "flex w-full justify-center" : "w-full"}
@@ -43,7 +48,10 @@ export function ProfileAvatarModeTabs({
         className={cn(
           isOnboardingModal
             ? "flex h-10 w-auto gap-2 rounded-none bg-transparent p-0 text-muted-foreground"
-            : "relative isolate grid h-14 w-full grid-cols-3 overflow-hidden rounded-full bg-muted p-1 text-muted-foreground",
+            : cn(
+                "relative isolate grid h-14 w-full overflow-hidden rounded-full bg-muted p-1 text-muted-foreground",
+                animatedModeEnabled ? "grid-cols-3" : "grid-cols-2",
+              ),
         )}
       >
         {isOnboardingModal ? null : (
@@ -51,12 +59,12 @@ export function ProfileAvatarModeTabs({
             aria-hidden="true"
             className="absolute bottom-1 left-1 top-1 z-0 rounded-full bg-background shadow transition-transform duration-[250ms] ease-out"
             style={{
-              transform: `translateX(${MODE_TAB_ORDER.indexOf(mode) * 100}%)`,
-              width: "calc((100% - 8px) / 3)",
+              transform: `translateX(${modes.indexOf(mode) * 100}%)`,
+              width: `calc((100% - 8px) / ${modes.length})`,
             }}
           />
         )}
-        {MODE_TAB_ORDER.map((tabMode) => (
+        {modes.map((tabMode) => (
           <TabsTrigger
             className={cn(
               isOnboardingModal

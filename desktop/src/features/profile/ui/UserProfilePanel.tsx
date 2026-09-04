@@ -48,6 +48,7 @@ import {
 import { useChannelsQuery } from "@/features/channels/hooks";
 import { useIdentityArchive } from "@/features/identity-archive/hooks";
 import { usePresenceQuery } from "@/features/presence/hooks";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import {
   useContactListQuery,
   useFollowMutation,
@@ -124,11 +125,13 @@ export function UserProfilePanel({
   widthPx,
   transparentChrome = false,
 }: UserProfilePanelProps) {
-  const { globalConfig } = useGlobalAgentConfig();
+  const legacyAgentProfileEnabled = useLocalOwnerPolicy() === "inactive";
+  const { globalConfig } = useGlobalAgentConfig({
+    enabled: legacyAgentProfileEnabled,
+  });
   const isOverlay = useIsThreadPanelOverlay();
   const isSplitLayout = layout === "split";
   useEscapeKey(onClose, isOverlay || isSinglePanelView);
-
   const [internalView, setInternalView] =
     React.useState<ProfilePanelView>("summary");
   const view = controlledView ?? internalView;
@@ -158,24 +161,18 @@ export function UserProfilePanel({
   const [editAgentFocus, setEditAgentFocus] = React.useState<
     EditAgentFocusTarget | undefined
   >(undefined);
-
-  // Open the Edit Agent dialog when `requestOpenEditAgent(pubkey)` fires from
-  // a card or other non-panel surface (e.g. `ConfigNudgeCard`). Mirrors the
-  // `subscribeOpenCreateAgent` pattern in AgentsView.
   React.useEffect(() => {
-    if (!pubkey) return;
-    // Consume any pending request that arrived before this panel mounted.
+    if (!legacyAgentProfileEnabled || !pubkey) return;
     const pending = consumePendingOpenEditAgent(pubkey);
     if (pending !== false) {
       setEditAgentFocus(pending === true ? undefined : pending);
       setEditAgentOpen(true);
     }
-    // Subscribe for events that arrive while the panel is mounted.
     return subscribeOpenEditAgent(pubkey, (focus) => {
       setEditAgentFocus(focus);
       setEditAgentOpen(true);
     });
-  }, [pubkey]);
+  }, [legacyAgentProfileEnabled, pubkey]);
   const [addToChannelOpen, setAddToChannelOpen] = React.useState(false);
   const [personaDialogState, setPersonaDialogState] =
     React.useState<PersonaDialogState | null>(null);
@@ -185,10 +182,14 @@ export function UserProfilePanel({
     React.useState<AgentPersona | null>(null);
   const [cardMintTarget, setCardMintTarget] =
     React.useState<CardMintTarget | null>(null);
-
-  const personasQuery = usePersonasQuery();
-  const managedAgentsQuery = useManagedAgentsQuery({ enabled: true });
+  const personasQuery = usePersonasQuery({
+    enabled: legacyAgentProfileEnabled,
+  });
+  const managedAgentsQuery = useManagedAgentsQuery({
+    enabled: legacyAgentProfileEnabled,
+  });
   const managedAgent = React.useMemo(() => {
+    if (!legacyAgentProfileEnabled) return undefined;
     const agents = managedAgentsQuery.data ?? [];
     if (pubkey) {
       const pubkeyLower = pubkey.toLowerCase();
@@ -198,7 +199,7 @@ export function UserProfilePanel({
       return agents.find((agent) => agent.personaId === persona.id);
     }
     return undefined;
-  }, [managedAgentsQuery.data, persona, pubkey]);
+  }, [legacyAgentProfileEnabled, managedAgentsQuery.data, persona, pubkey]);
   const personaInstances = React.useMemo(() => {
     if (!managedAgent?.personaId) return managedAgent ? [managedAgent] : [];
     return (managedAgentsQuery.data ?? []).filter(
@@ -206,6 +207,7 @@ export function UserProfilePanel({
     );
   }, [managedAgent, managedAgentsQuery.data]);
   const resolvedPersonaFromSource = React.useMemo(() => {
+    if (!legacyAgentProfileEnabled) return undefined;
     const personaId = persona?.id ?? managedAgent?.personaId;
     if (personaId) {
       const refreshedPersona = personasQuery.data?.find(
@@ -224,7 +226,12 @@ export function UserProfilePanel({
     return personasQuery.data?.find(
       (candidate) => candidate.id === managedAgent.personaId,
     );
-  }, [managedAgent?.personaId, persona, personasQuery.data]);
+  }, [
+    legacyAgentProfileEnabled,
+    managedAgent?.personaId,
+    persona,
+    personasQuery.data,
+  ]);
   const profileIdentityKey =
     pubkey ?? managedAgent?.pubkey ?? `persona:${persona?.id ?? "unknown"}`;
   const resolvedPersona = useRetainedPersona(
@@ -233,18 +240,21 @@ export function UserProfilePanel({
   );
   const effectivePubkey = pubkey ?? managedAgent?.pubkey ?? null;
   const pubkeyLower = effectivePubkey?.toLowerCase() ?? "";
-
   const profileQuery = useUserProfileQuery(effectivePubkey ?? undefined);
   const currentProfileQuery = useProfileQuery(currentPubkey !== undefined);
-
   React.useEffect(() => {
     if (!effectivePubkey) return;
     void profileQuery.refetch();
   }, [effectivePubkey, profileQuery.refetch]);
-
-  const relayAgentsQuery = useRelayAgentsQuery({ enabled: true });
-  const availableRuntimesQuery = useAvailableAcpRuntimes();
-  const acpRuntimesQuery = useAcpRuntimesQuery();
+  const relayAgentsQuery = useRelayAgentsQuery({
+    enabled: legacyAgentProfileEnabled,
+  });
+  const availableRuntimesQuery = useAvailableAcpRuntimes({
+    enabled: legacyAgentProfileEnabled,
+  });
+  const acpRuntimesQuery = useAcpRuntimesQuery({
+    enabled: legacyAgentProfileEnabled,
+  });
   const createAgentMutation = useCreateManagedAgentMutation();
   const updateManagedAgentMutation = useUpdateManagedAgentMutation();
   const startAgentMutation = useStartManagedAgentMutation();
@@ -268,7 +278,9 @@ export function UserProfilePanel({
   const contactListQuery = useContactListQuery(currentPubkey);
   const followMutation = useFollowMutation(currentPubkey);
   const unfollowMutation = useUnfollowMutation(currentPubkey);
-  const { canOpenAgentActivity, openAgentActivity } = useOpenAgentActivity();
+  const { canOpenAgentActivity, openAgentActivity } = useOpenAgentActivity({
+    enabled: legacyAgentProfileEnabled,
+  });
   const { goChannel } = useAppNavigation();
   const profile = resolvePanelProfile({
     managedAgent,
@@ -297,22 +309,15 @@ export function UserProfilePanel({
     usersBatchQuery.data?.profiles[pubkeyLower]?.isAgent,
   );
   const isBot =
-    Boolean(relayAgent || managedAgent || resolvedPersona) || isAgentByOaOwner;
-  const managedAgentOwner = useIsManagedAgent(isBot ? effectivePubkey : null);
-  // Does THIS desktop hold the agent's seckey (or is this an editable persona)?
-  // Gates edit (which needs the key) and grants owner access when managed locally.
+    legacyAgentProfileEnabled &&
+    (Boolean(relayAgent || managedAgent || resolvedPersona) ||
+      isAgentByOaOwner);
+  const managedAgentOwner = useIsManagedAgent(isBot ? effectivePubkey : null, {
+    enabled: legacyAgentProfileEnabled,
+  });
   const isOwner = resolvedPersona ? true : managedAgentOwner;
-  // Is the viewer the agent's declared owner (NIP-OA `ownerPubkey == me`)? This
-  // is the right signal for viewing owner-scoped data (activity feed, memory):
-  // the relay routes and the client decrypts those frames with the owner's OWN
-  // key, so the agent's seckey is never needed. Computed here (before the gates
-  // that consume it) so visibility keys off declared ownership, not key custody.
   const isCurrentUserOwner = ownsAuthorAgent(profile, currentPubkey);
-  // The viewer may see owner-scoped data if they declared-own the agent OR they
-  // manage it locally (older agents may not advertise an owner pubkey). Every
-  // real boundary is server-side, so this only controls what UI we paint.
   const viewerIsOwner = isCurrentUserOwner || isOwner === true;
-
   const activityAgent = React.useMemo(
     () =>
       resolveProfileActivityAgent({
@@ -325,14 +330,12 @@ export function UserProfilePanel({
       }),
     [effectivePubkey, isBot, managedAgent, profile, relayAgent, viewerIsOwner],
   );
-  // Observer ingestion (frame decryption + derived active-turn liveness) is
-  // owner-global — mounted once in AppShell via useAgentObserverIngestion —
-  // covering both locally managed agents and declared-owned relay agents.
   const canEditAgent =
     isOwner === true &&
     (managedAgent !== undefined || resolvedPersona !== undefined);
   const memoryQuery = useAgentMemoryQuery(effectivePubkey, {
-    enabled: viewerIsOwner && Boolean(effectivePubkey),
+    enabled:
+      legacyAgentProfileEnabled && viewerIsOwner && Boolean(effectivePubkey),
   });
   const isSelf =
     currentPubkey !== undefined &&
@@ -621,8 +624,6 @@ export function UserProfilePanel({
     [deletePersonaMutation.mutateAsync, onClose],
   );
 
-  // Count of managed-agent instances backed by the persona being deleted.
-  // Shown in the confirm dialog so the user knows what will be cascade-deleted.
   const personaDeleteInstanceCount = React.useMemo(
     () =>
       personaToDelete
@@ -720,7 +721,10 @@ export function UserProfilePanel({
   const canManagePersona = isOwner === true && resolvedPersona !== undefined;
   const canEditPersona = canManagePersona;
   const canDeletePersona = canManagePersona && !resolvedPersona?.sourceTeam;
-  const archiveActions = useIdentityArchive(effectivePubkey);
+  const archiveActions = useIdentityArchive(
+    effectivePubkey,
+    legacyAgentProfileEnabled,
+  );
   const agentSettingsMenu = (
     <UserProfileAgentSettingsMenuSlot
       archiveActions={archiveActions}
@@ -832,11 +836,8 @@ export function UserProfilePanel({
             canManagePersona && resolvedPersona
               ? () =>
                   setCardMintTarget({
-                    // Prefer the live instance pubkey; fall back to the
-                    // persona/definition id (same resolution as export).
                     id: managedAgent?.pubkey ?? resolvedPersona.id,
                     name: resolvedPersona.displayName,
-                    // Locking needs an instance keypair to encrypt to.
                     canLock: Boolean(managedAgent?.pubkey),
                   })
               : undefined

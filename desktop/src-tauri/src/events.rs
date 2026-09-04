@@ -9,6 +9,7 @@
 //! Each function validates inputs and returns a nostr::EventBuilder.
 //! Signing and submission happen in relay::submit_event.
 
+#[cfg(not(feature = "local-owner-profile"))]
 use buzz_core_pkg::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use nostr::{EventBuilder, EventId, Kind, Tag};
 use uuid::Uuid;
@@ -140,6 +141,7 @@ fn check_pubkey(pubkey: &str) -> Result<(), String> {
 // ── Channel operations ───────────────────────────────────────────────────────
 
 /// Kind 9007 — create channel.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_create_channel(
     channel_id: Uuid,
     name: &str,
@@ -168,12 +170,14 @@ pub fn build_create_channel(
 }
 
 /// Kind 9021 — join channel.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_join(channel_id: Uuid) -> Result<EventBuilder, String> {
     let tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     Ok(EventBuilder::new(Kind::Custom(9021), "").tags(tags))
 }
 
 /// Kind 9022 — leave channel.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_leave(channel_id: Uuid) -> Result<EventBuilder, String> {
     let tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     Ok(EventBuilder::new(Kind::Custom(9022), "").tags(tags))
@@ -183,6 +187,7 @@ pub fn build_leave(channel_id: Uuid) -> Result<EventBuilder, String> {
 ///
 /// `ttl`: outer `None` leaves it unchanged; `Some(Some(secs))` sets the
 /// ephemeral timeout; `Some(None)` clears it (emits `["ttl", ""]`).
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_update_channel(
     channel_id: Uuid,
     name: Option<&str>,
@@ -222,6 +227,7 @@ pub fn build_update_channel(
 }
 
 /// Kind 9002 — set topic.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_set_topic(channel_id: Uuid, topic: &str) -> Result<EventBuilder, String> {
     let tags = vec![
         tag(vec!["h", &channel_id.to_string()])?,
@@ -231,6 +237,7 @@ pub fn build_set_topic(channel_id: Uuid, topic: &str) -> Result<EventBuilder, St
 }
 
 /// Kind 9002 — set purpose.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_set_purpose(channel_id: Uuid, purpose: &str) -> Result<EventBuilder, String> {
     let tags = vec![
         tag(vec!["h", &channel_id.to_string()])?,
@@ -240,6 +247,7 @@ pub fn build_set_purpose(channel_id: Uuid, purpose: &str) -> Result<EventBuilder
 }
 
 /// Kind 9002 — archive.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_archive(channel_id: Uuid) -> Result<EventBuilder, String> {
     let tags = vec![
         tag(vec!["h", &channel_id.to_string()])?,
@@ -249,6 +257,7 @@ pub fn build_archive(channel_id: Uuid) -> Result<EventBuilder, String> {
 }
 
 /// Kind 9002 — unarchive.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_unarchive(channel_id: Uuid) -> Result<EventBuilder, String> {
     let tags = vec![
         tag(vec!["h", &channel_id.to_string()])?,
@@ -258,6 +267,7 @@ pub fn build_unarchive(channel_id: Uuid) -> Result<EventBuilder, String> {
 }
 
 /// Kind 9008 — delete channel.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_delete_channel(channel_id: Uuid) -> Result<EventBuilder, String> {
     let tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     Ok(EventBuilder::new(Kind::Custom(9008), "").tags(tags))
@@ -266,6 +276,7 @@ pub fn build_delete_channel(channel_id: Uuid) -> Result<EventBuilder, String> {
 // ── Membership ───────────────────────────────────────────────────────────────
 
 /// Kind 9000 — add member.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_add_member(
     channel_id: Uuid,
     target_pubkey: &str,
@@ -283,6 +294,7 @@ pub fn build_add_member(
 }
 
 /// Kind 9001 — remove member.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_remove_member(channel_id: Uuid, target_pubkey: &str) -> Result<EventBuilder, String> {
     check_pubkey(target_pubkey)?;
     let tags = vec![
@@ -304,16 +316,33 @@ pub fn build_message(
     custom_emoji_tags: &[Vec<String>],
     mention_ref_tags: &[Vec<String>],
 ) -> Result<EventBuilder, String> {
-    build_message_with_client_tags(
-        channel_id,
-        content,
-        thread_ref,
-        mentions,
-        media_tags,
-        custom_emoji_tags,
-        mention_ref_tags,
-        &[],
-    )
+    #[cfg(not(feature = "local-owner-profile"))]
+    {
+        build_message_with_client_tags(
+            channel_id,
+            content,
+            thread_ref,
+            mentions,
+            media_tags,
+            custom_emoji_tags,
+            mention_ref_tags,
+            &[],
+        )
+    }
+
+    #[cfg(feature = "local-owner-profile")]
+    {
+        check_content(content)?;
+        let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
+        if let Some(thread_ref) = thread_ref {
+            tags.extend(thread_tags(thread_ref)?);
+        }
+        tags.extend(mention_tags(mentions)?);
+        imeta_tags(media_tags, &mut tags)?;
+        emoji_tags(custom_emoji_tags, &mut tags)?;
+        mention_reference_tags(mention_ref_tags, &mut tags)?;
+        Ok(EventBuilder::new(Kind::Custom(9), content).tags(tags))
+    }
 }
 
 /// Kind 9 — stream message with internal client marker tags.
@@ -322,6 +351,7 @@ pub fn build_message(
 /// only `["client", ...]` tags, which are useful for idempotency markers but
 /// cannot forge channel/thread/mention metadata.
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_message_with_client_tags(
     channel_id: Uuid,
     content: &str,
@@ -345,6 +375,7 @@ pub fn build_message_with_client_tags(
     Ok(EventBuilder::new(Kind::Custom(9), content).tags(tags))
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn append_client_tags(client_tags: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), String> {
     for client_tag in client_tags {
         if client_tag.first().map(String::as_str) != Some("client") {
@@ -408,6 +439,7 @@ pub fn build_forum_comment(
 /// edit that leaves the mention set unchanged emits no `p` tags and never
 /// re-wakes anyone. This mirrors the send path's `mention_tags` (dedup +
 /// lowercase); the receiver overlays these onto the original event's audience.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_message_edit(
     channel_id: Uuid,
     target_event_id: EventId,
@@ -429,6 +461,7 @@ pub fn build_message_edit(
 
 /// Kind 5 — NIP-09 deletion. The `h` tag is non-standard for NIP-09 but is
 /// required so channel-scoped subscriptions observe the delete.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_delete_compat(
     channel_id: Uuid,
     target_event_id: EventId,
@@ -462,6 +495,7 @@ pub fn build_remove_reaction(reaction_event_id: EventId) -> Result<EventBuilder,
 // ── Canvas ───────────────────────────────────────────────────────────────────
 
 /// Kind 40100 — set canvas.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_set_canvas(channel_id: Uuid, content: &str) -> Result<EventBuilder, String> {
     check_content(content)?;
     let tags = vec![tag(vec!["h", &channel_id.to_string()])?];
@@ -501,6 +535,7 @@ pub fn build_profile(
 // ── Huddles ──────────────────────────────────────────────────────────────────
 
 /// Validate that a string is a valid UUID (defense-in-depth for `&str` channel IDs).
+#[cfg(not(feature = "local-owner-profile"))]
 fn validate_channel_id(id: &str) -> Result<(), String> {
     uuid::Uuid::parse_str(id).map_err(|_| format!("invalid channel UUID: {id}"))?;
     Ok(())
@@ -510,6 +545,7 @@ fn validate_channel_id(id: &str) -> Result<(), String> {
 /// All huddle events share: validate two channel IDs, JSON content with
 /// `ephemeral_channel_id`, an `["h", parent_channel_id]` tag, and an
 /// optional `["p", participant_pubkey]` tag for join/leave identity.
+#[cfg(not(feature = "local-owner-profile"))]
 fn build_huddle_event(
     kind: u16,
     parent_channel_id: &str,
@@ -533,6 +569,7 @@ fn build_huddle_event(
 }
 
 /// Kind 48100 — huddle started advisory posted to the parent channel.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_huddle_started(
     parent_channel_id: &str,
     ephemeral_channel_id: &str,
@@ -541,6 +578,7 @@ pub fn build_huddle_started(
 }
 
 /// Kind 48103 — huddle ended, posted to the parent channel.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_huddle_ended(
     parent_channel_id: &str,
     ephemeral_channel_id: &str,
@@ -553,6 +591,7 @@ pub fn build_huddle_ended(
 /// Posted to the **ephemeral** channel (not the parent) so agents see it
 /// via EOSE replay when they subscribe. Uses a dedicated kind so the TTS
 /// pipeline can filter it out without fragile content-prefix matching.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_huddle_guidelines(
     ephemeral_channel_id: &str,
     guidelines_text: &str,
@@ -566,6 +605,7 @@ pub fn build_huddle_guidelines(
 // ── Social notes ────────────────────────────────────────────────────────────
 
 /// Kind 1 — NIP-01 short text note (global, no channel scope).
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_note(
     content: &str,
     reply_to_event_id: Option<EventId>,
@@ -585,8 +625,10 @@ pub fn build_note(
 // ── Relay admin (NIP-43) ────────────────────────────────────────────────────
 
 /// Allowed relay member roles for NIP-43 admin commands.
+#[cfg(not(feature = "local-owner-profile"))]
 const VALID_RELAY_ROLES: &[&str] = &["owner", "admin", "member"];
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn check_relay_role(role: &str) -> Result<(), String> {
     if !VALID_RELAY_ROLES.contains(&role) {
         return Err(format!(
@@ -598,6 +640,7 @@ fn check_relay_role(role: &str) -> Result<(), String> {
 }
 
 /// Kind 9030 — add a pubkey to the relay member list.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_relay_admin_add(target_pubkey: &str, role: &str) -> Result<EventBuilder, String> {
     check_pubkey(target_pubkey)?;
     check_relay_role(role)?;
@@ -609,6 +652,7 @@ pub fn build_relay_admin_add(target_pubkey: &str, role: &str) -> Result<EventBui
 }
 
 /// Kind 9031 — remove a pubkey from the relay member list.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_relay_admin_remove(target_pubkey: &str) -> Result<EventBuilder, String> {
     check_pubkey(target_pubkey)?;
     let tags = vec![tag(vec!["p", &target_pubkey.to_ascii_lowercase()])?];
@@ -616,6 +660,7 @@ pub fn build_relay_admin_remove(target_pubkey: &str) -> Result<EventBuilder, Str
 }
 
 /// Kind 9032 — change the role of an existing relay member.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_relay_admin_change_role(
     target_pubkey: &str,
     new_role: &str,
@@ -640,6 +685,7 @@ pub fn build_relay_admin_change_role(
 // job is to produce a well-formed, signed request — consent path is selected
 // by the relay, not declared here.
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn check_reason(reason: &str) -> Result<(), String> {
     // Reason codes are machine-readable strings; the spec doesn't cap length
     // but we keep them short to discourage stuffing prose where `content` goes.
@@ -655,6 +701,7 @@ fn check_reason(reason: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 fn identity_archive_tags(
     target_pubkey: &str,
     reason: Option<&str>,
@@ -713,6 +760,7 @@ fn identity_archive_tags(
 /// `.allow_self_tagging()` is required: NIP-IA's self path has `actor==target`,
 /// which means the request's `["p", target]` matches the signer. nostr 0.44
 /// strips matching `p` tags by default — we need the wire form intact.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_archive_identity_request(
     target_pubkey: &str,
     content: &str,
@@ -735,6 +783,7 @@ pub fn build_archive_identity_request(
 /// unarchive per spec). `auth` is used for owner-of-agent unarchive paths.
 /// See `build_archive_identity_request` for the rationale on
 /// `.allow_self_tagging()`.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_unarchive_identity_request(
     target_pubkey: &str,
     content: &str,
@@ -806,6 +855,7 @@ pub fn build_dm_hide(channel_id: &str) -> Result<EventBuilder, String> {
 ///
 /// The `d` tag carries the workflow id; `h` tag carries the channel id; the
 /// content is the YAML definition. Same (pubkey, d) replaces the prior version.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_workflow_definition(
     workflow_id: &str,
     channel_id: &str,
@@ -817,6 +867,7 @@ pub fn build_workflow_definition(
 }
 
 /// Kind 5 — NIP-09 deletion targeting a kind:30620 workflow definition.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_workflow_delete(
     workflow_id: &str,
     owner_pubkey_hex: &str,
@@ -827,18 +878,21 @@ pub fn build_workflow_delete(
 }
 
 /// Kind 46020 — trigger a workflow run by id.
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_workflow_trigger(workflow_id: &str) -> Result<EventBuilder, String> {
     let tags = vec![tag(vec!["d", workflow_id])?];
     Ok(EventBuilder::new(Kind::Custom(46020), "").tags(tags))
 }
 
 /// Kind 46030 — grant an approval token (with optional note).
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_approval_grant(token: &str, note: Option<&str>) -> Result<EventBuilder, String> {
     let tags = vec![tag(vec!["t", token])?];
     Ok(EventBuilder::new(Kind::Custom(46030), note.unwrap_or("")).tags(tags))
 }
 
 /// Kind 46031 — deny an approval token (with optional note).
+#[cfg(not(feature = "local-owner-profile"))]
 pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuilder, String> {
     let tags = vec![tag(vec!["t", token])?];
     Ok(EventBuilder::new(Kind::Custom(46031), note.unwrap_or("")).tags(tags))
@@ -846,154 +900,6 @@ pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuild
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nostr::Keys;
-    #[test]
-    fn channel_builders_reject_hash_only_names() {
-        let channel_id = Uuid::new_v4();
-        assert!(build_create_channel(channel_id, "###", "open", "stream", None, None).is_err());
-        assert!(build_update_channel(channel_id, Some("###"), None, None, None).is_err());
-    }
-    /// Builder layout regression for the NIP-IA owner-of-agent archive flow.
-    /// Compares against `docs/nips/NIP-IA.md` §Vector 1.
-    #[test]
-    fn archive_identity_request_matches_spec_vector_1_layout() {
-        const OWNER_HEX: &str = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-        const TARGET_HEX: &str = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
-        const CONDITIONS: &str = "kind=1&created_at<1713957000";
-        const SIG: &str = "8b7df2575caf0a108374f8471722b233c53f9ff827a8b0f91861966c3b9dd5cb2e189eae9f49d72187674c2f5bd244145e10ff86c9f257ffe65a1ee5f108b369";
-
-        let auth: [String; 4] = [
-            "auth".into(),
-            OWNER_HEX.into(),
-            CONDITIONS.into(),
-            SIG.into(),
-        ];
-        let builder = build_archive_identity_request(
-            TARGET_HEX,
-            "Archiving zombie agent after rebuild.",
-            Some("bot-rebuilt"),
-            None,
-            Some(&auth),
-        )
-        .expect("build_archive_identity_request");
-
-        let owner_secret = nostr::SecretKey::from_hex(
-            "0000000000000000000000000000000000000000000000000000000000000001",
-        )
-        .unwrap();
-        let owner_keys = Keys::new(owner_secret);
-        let event = builder.sign_with_keys(&owner_keys).unwrap();
-
-        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
-
-        assert_eq!(event.kind, Kind::Custom(KIND_IA_ARCHIVE_REQUEST as u16));
-        // Spec layout: ["-"], ["p", target], ["reason", code], ["auth", ...]
-        assert_eq!(tags[0], vec!["-"]);
-        assert_eq!(tags[1], vec!["p", TARGET_HEX]);
-        assert_eq!(tags[2], vec!["reason", "bot-rebuilt"]);
-        assert_eq!(tags[3], vec!["auth", OWNER_HEX, CONDITIONS, SIG]);
-    }
-
-    #[test]
-    fn archive_request_rejects_replaced_by_equal_target() {
-        const TARGET_HEX: &str = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
-        let err = build_archive_identity_request(TARGET_HEX, "", None, Some(TARGET_HEX), None)
-            .unwrap_err();
-        assert!(err.contains("replaced-by"));
-    }
-
-    #[test]
-    fn unarchive_request_layout_self_path() {
-        const TARGET_HEX: &str = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
-        let builder = build_unarchive_identity_request(
-            TARGET_HEX,
-            "I am active again.",
-            Some("returned"),
-            None,
-        )
-        .unwrap();
-        let target_secret = nostr::SecretKey::from_hex(
-            "0000000000000000000000000000000000000000000000000000000000000002",
-        )
-        .unwrap();
-        let event = builder.sign_with_keys(&Keys::new(target_secret)).unwrap();
-        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
-        assert_eq!(event.kind, Kind::Custom(KIND_IA_UNARCHIVE_REQUEST as u16));
-        // Self-unarchive: the `p` tag MUST point at the signer. Verifies our
-        // `.allow_self_tagging()` call survives nostr 0.44's default scrub.
-        assert_eq!(tags[0], vec!["-"]);
-        assert_eq!(tags[1], vec!["p", TARGET_HEX]);
-        assert_eq!(tags[2], vec!["reason", "returned"]);
-        assert_eq!(tags.len(), 3, "self unarchive must not carry auth tag");
-        assert_eq!(event.pubkey.to_hex(), TARGET_HEX);
-    }
-
-    // ── build_message_edit `p`-tag emission (lane 8ace8eed) ──────────────
-    //
-    // The composer diffs the edited body's mentions against the original and
-    // hands `build_message_edit` only the *newly added* pubkeys. These tests
-    // pin the builder's contract given that contract: emit a `p` per added
-    // mention (deduped, lowercased), and none when the added set is empty
-    // (typo-fix edit) — so an unchanged mention set re-wakes nobody.
-
-    const CH_ID: &str = "11111111-1111-4111-8111-111111111111";
-    const ALICE_HEX: &str = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-    const BOB_HEX: &str = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
-
-    fn edit_tags(mentions: &[&str]) -> Vec<Vec<String>> {
-        let channel = Uuid::parse_str(CH_ID).unwrap();
-        let target =
-            EventId::from_hex("d24da132115ca0a46233cf4c2ad8338fbf914250cbcaa9181a6dd59533cb5ac1")
-                .unwrap();
-        let builder = build_message_edit(channel, target, "hi @alice", &[], &[], mentions).unwrap();
-        let secret = nostr::SecretKey::from_hex(
-            "0000000000000000000000000000000000000000000000000000000000000003",
-        )
-        .unwrap();
-        let event = builder.sign_with_keys(&Keys::new(secret)).unwrap();
-        event.tags.iter().map(|t| t.as_slice().to_vec()).collect()
-    }
-
-    #[test]
-    fn edit_with_added_mention_emits_p_tag() {
-        let tags = edit_tags(&[ALICE_HEX]);
-        assert_eq!(tags[0][0], "h");
-        assert_eq!(tags[1][0], "e");
-        // The `p` tag rides right after the `e` tag (insertion order).
-        assert_eq!(tags[2], vec!["p".to_string(), ALICE_HEX.to_string()]);
-    }
-
-    #[test]
-    fn edit_with_no_added_mentions_emits_no_p_tag() {
-        // Typo-fix edit: mention set unchanged, so the composer passes `&[]`.
-        // The edit event must carry no `p` tag and re-wake nobody.
-        let tags = edit_tags(&[]);
-        assert!(
-            !tags
-                .iter()
-                .any(|t| t.first().map(String::as_str) == Some("p")),
-            "unchanged-mention edit must not emit any `p` tag, got {tags:?}"
-        );
-    }
-
-    #[test]
-    fn edit_mentions_are_deduped_and_lowercased() {
-        let alice_upper = ALICE_HEX.to_ascii_uppercase();
-        let tags = edit_tags(&[ALICE_HEX, &alice_upper, BOB_HEX]);
-        let p_tags: Vec<&Vec<String>> = tags
-            .iter()
-            .filter(|t| t.first().map(String::as_str) == Some("p"))
-            .collect();
-        // ALICE appears twice (mixed case) but collapses to one lowercase tag.
-        assert_eq!(
-            p_tags.len(),
-            2,
-            "duplicate mention must collapse, got {p_tags:?}"
-        );
-        assert_eq!(p_tags[0], &vec!["p".to_string(), ALICE_HEX.to_string()]);
-        assert_eq!(p_tags[1], &vec!["p".to_string(), BOB_HEX.to_string()]);
-    }
-}
+#[cfg(all(test, not(feature = "local-owner-profile")))]
+#[path = "events_tests.rs"]
+mod tests;

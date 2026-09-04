@@ -7,6 +7,9 @@ fn dev_keyring_service(configured: Option<String>) -> String {
 }
 
 pub(crate) fn keyring_service() -> &'static str {
+    if crate::local_owner_profile::profile_active() {
+        return crate::local_owner_profile::KEYRING_SERVICE;
+    }
     if cfg!(debug_assertions) {
         static DEV_SERVICE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         DEV_SERVICE

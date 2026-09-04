@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { LocalOwnerPolicyStatus } from "@/features/onboarding/useLocalOwnerPolicy";
 import { type QueryStatus, useQueryClient } from "@tanstack/react-query";
 
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -99,9 +100,11 @@ function identitySettled(status: QueryStatus, isFetching: boolean) {
 export function useMachineOnboardingState({
   activeCommunityPubkey,
   isSharedIdentity,
+  localOwnerPolicy,
 }: {
   activeCommunityPubkey: string | null | undefined;
   isSharedIdentity: boolean;
+  localOwnerPolicy: LocalOwnerPolicyStatus;
 }) {
   const queryClient = useQueryClient();
   const identityQuery = useIdentityQuery();
@@ -109,6 +112,7 @@ export function useMachineOnboardingState({
   const currentPubkey = identity?.pubkey ?? null;
   const identityLost = identity?.lost === true;
   const identityLocked = identity?.locked === true;
+  const nativeRelaunchRequired = identity?.relaunchRequired === true;
   const identityResetFailed = identity?.resetFailed === true;
   const [completedPubkey, setCompletedPubkey] = React.useState<string | null>(
     () =>
@@ -127,13 +131,16 @@ export function useMachineOnboardingState({
   const [bootedLocked, setBootedLocked] = React.useState(false);
 
   React.useEffect(() => {
+    if (localOwnerPolicy !== "inactive") {
+      return;
+    }
     if (
       identityQuery.status === "success" &&
       startupPubkeyRef.current === null
     ) {
       startupPubkeyRef.current = currentPubkey;
     }
-  }, [currentPubkey, identityQuery.status]);
+  }, [currentPubkey, identityQuery.status, localOwnerPolicy]);
   React.useEffect(() => {
     if (identityLost) setBootedLost(true);
   }, [identityLost]);
@@ -143,6 +150,7 @@ export function useMachineOnboardingState({
 
   React.useEffect(() => {
     if (
+      localOwnerPolicy !== "inactive" ||
       !currentPubkey ||
       currentPubkey !== startupPubkeyRef.current ||
       identityQuery.status !== "success" ||
@@ -166,6 +174,7 @@ export function useMachineOnboardingState({
     identityLost,
     identityQuery.status,
     isSharedIdentity,
+    localOwnerPolicy,
   ]);
 
   const complete = React.useCallback(
@@ -192,9 +201,12 @@ export function useMachineOnboardingState({
   }, [currentPubkey]);
 
   const relaunchRequired =
-    ((bootedLost && !identityLost) || (bootedLocked && !identityLocked)) &&
+    (nativeRelaunchRequired ||
+      (bootedLost && !identityLost) ||
+      (bootedLocked && !identityLocked)) &&
     identityQuery.status === "success";
   const hasCompletedCurrentPubkey =
+    localOwnerPolicy === "active" ||
     completedPubkey === currentPubkey ||
     (!forceMachineOnboarding() &&
       readMachineOnboardingCompletion(currentPubkey));
@@ -208,8 +220,13 @@ export function useMachineOnboardingState({
     stage = "relaunch-required";
   } else if (identityLost && identityQuery.status === "success") {
     stage = "onboarding";
+  } else if (
+    localOwnerPolicy === "loading" ||
+    localOwnerPolicy === "unavailable"
+  ) {
+    stage = "blocking";
   } else if (identityQuery.status === "error") {
-    stage = "ready";
+    stage = localOwnerPolicy === "active" ? "blocking" : "ready";
   } else if (
     !identitySettled(
       identityQuery.status,

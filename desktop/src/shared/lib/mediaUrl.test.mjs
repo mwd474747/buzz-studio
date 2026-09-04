@@ -63,6 +63,34 @@ test("media-proxy port store: resolved port publishes and reset notifies subscri
   }
 });
 
+test("local-owner recovery derives the relay origin without polling removed proxy commands", async () => {
+  const previousWindow = globalThis.window;
+  const commands = [];
+
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke(command) {
+        commands.push(command);
+        if (command === "get_local_owner_profile") {
+          return Promise.resolve({ relay_ws_url: "ws://localhost:3300" });
+        }
+        return Promise.reject(new Error(`Unexpected command: ${command}`));
+      },
+    },
+  };
+
+  try {
+    const mediaUrl = await import(`./mediaUrl.ts?localOwner=${Date.now()}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(commands, ["get_local_owner_profile"]);
+    assert.equal(mediaUrl.getCachedRelayOrigin(), "http://localhost:3300");
+    assert.equal(mediaUrl.getCachedMediaProxyPort(), null);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test("relay-origin store: publishes are canonicalized at the store boundary", () => {
   // The store must hold the invariant that `cachedRelayOrigin` is always a
   // canonical URL origin — consumers compare `new URL(src).origin` against it
