@@ -770,8 +770,7 @@ function ActiveHuddleProvider({ children }: { children: React.ReactNode }) {
 
 export function useHuddle(): HuddleContextValue {
   const ctx = React.useContext(HuddleContext);
-  if (!ctx) {
-    throw new Error("useHuddle must be used within a HuddleProvider");
-  }
-  return ctx;
+  // Local-owner and other profiles may omit HuddleProvider; huddles are not
+  // part of that product surface — return the disabled context instead of throwing.
+  return ctx ?? DISABLED_HUDDLE_CONTEXT;
 }
