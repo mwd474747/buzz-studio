@@ -9,6 +9,8 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  lazy,
+  Suspense,
 } from "react";
 
 import { router } from "@/app/router";
@@ -19,7 +21,6 @@ import {
 import { deriveShellRoute } from "@/app/AppShell.helpers";
 import { ThemeGrainientBackground } from "@/app/ThemeGrainientBackground";
 import { useReloadShortcut } from "@/app/useReloadShortcut";
-import { KnownAgentPubkeysProvider } from "@/features/agents/useKnownAgentPubkeys";
 import { useAppOnboardingState } from "@/features/onboarding/hooks";
 import { useMachineOnboardingState } from "@/features/onboarding/machineOnboarding";
 import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
@@ -57,7 +58,6 @@ import { WelcomeSetup } from "@/features/communities/ui/WelcomeSetup";
 import { CommunityApplyErrorScreen } from "@/features/communities/ui/CommunityApplyErrorScreen";
 import { CommunityChangeOverlay } from "@/features/communities/ui/CommunityChangeOverlay";
 import { setAvatarProfileSyncQueryClient } from "@/features/profile/avatarProfileSync";
-import { EncryptedBackupProvider } from "@/features/settings/EncryptedBackupProvider";
 import { createBuzzQueryClient } from "@/shared/api/queryClient";
 import { isSharedIdentity as isSharedIdentityCmd } from "@/shared/api/tauri";
 import { getProfile } from "@/shared/api/tauriProfiles";
@@ -81,6 +81,14 @@ const LOADING_TEXT = "Setting up your community...";
 const BOOT_SPLASH_MIN_VISIBLE_MS = 1_200;
 const BOOT_SPLASH_FADE_MS = 200;
 const INITIAL_RENDER_READY_EVENT = "initial-render-ready";
+
+const OrdinaryAppBoundary =
+  import.meta.env.MODE === "local-owner"
+    ? null
+    : lazy(async () => {
+        const module = await import("@/app/OrdinaryAppBoundary");
+        return { default: module.OrdinaryAppBoundary };
+      });
 
 type BootSplashPhase = "holding" | "fading" | "done";
 
@@ -272,19 +280,16 @@ function AppReady({
     return isCommunitySwitch ? <CommunitySwitchGate /> : <AppLoadingGate />;
   }
 
-  return (
-    <EncryptedBackupProvider
-      onOpenSettings={() =>
-        void router.navigate({
-          to: "/settings",
-          search: { section: "profile" },
-        })
-      }
-    >
-      <KnownAgentPubkeysProvider enabled={localOwnerPolicy === "inactive"}>
-        <RouterProvider router={router} />
-      </KnownAgentPubkeysProvider>
-    </EncryptedBackupProvider>
+  const routedApp = <RouterProvider router={router} />;
+
+  return OrdinaryAppBoundary ? (
+    <Suspense fallback={null}>
+      <OrdinaryAppBoundary enabled={localOwnerPolicy === "inactive"}>
+        {routedApp}
+      </OrdinaryAppBoundary>
+    </Suspense>
+  ) : (
+    routedApp
   );
 }
 

@@ -1,5 +1,8 @@
 {
   "identifier": "xyz.block.buzz.app",
+  "build": {
+    "beforeBuildCommand": "pnpm build:local-owner"
+  },
   "app": {
     "security": {
       "capabilities": ["local-owner"],

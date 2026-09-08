@@ -34,11 +34,6 @@ import {
   useHomeFeedNotifications,
   useHomeFeedNotificationState,
 } from "@/features/notifications/hooks";
-import { PreventSleepProvider } from "@/features/agents/usePreventSleep";
-import { requestOpenCreateAgent } from "@/features/agents/openCreateAgentEvent";
-import { useLegacyAgentCockpitEffects } from "@/features/agents/useLegacyAgentCockpitEffects";
-import { AgentManagementDialogs } from "@/features/agents/ui/AgentManagementDialogs";
-import { RequestedAgentCreateDialogs } from "@/features/agents/ui/RequestedAgentCreateDialogs";
 import {
   usePresenceSession,
   usePresenceSubscription,
@@ -56,11 +51,7 @@ import {
   type SettingsSection,
   isSettingsSection,
 } from "@/features/settings/ui/SettingsPanels";
-import { HuddleProvider } from "@/features/huddle";
-import { AppHuddleBar } from "@/app/AppHuddleBar";
 import { useDueReminderBadgeCount } from "@/features/reminders/hooks";
-import { RemindMeLaterProvider } from "@/features/reminders/ui/RemindMeLaterProvider";
-import { useReminderNotifications } from "@/features/reminders/useReminderNotifications";
 import { AppSidebar } from "@/features/sidebar/ui/AppSidebar";
 import { requestFocusedThreadClose } from "@/features/channels/focusedThreadCloseRequest";
 import { CommunityRail } from "@/features/sidebar/ui/CommunityRail";
@@ -91,15 +82,54 @@ import { useMessageDeepLinks } from "@/shared/useMessageDeepLinks";
 import { SidebarInset, SidebarProvider } from "@/shared/ui/sidebar";
 import { RelayConnectionOverlay } from "@/app/RelayConnectionOverlay";
 import { useSidebarRelayConnectionCard } from "@/features/sidebar/ui/useSidebarRelayConnectionCard";
-import { AppShellTrayMenu } from "@/app/useAppShellTrayMenu";
 import { AppProfilePanelProvider } from "@/app/AppProfilePanelProvider";
 const LazySettingsScreen = React.lazy(async () => {
   const module = await import("@/features/settings/ui/SettingsScreen");
   return { default: module.SettingsScreen };
 });
+const OrdinaryAgentCockpitEffects =
+  import.meta.env.MODE === "local-owner"
+    ? null
+    : React.lazy(async () => {
+        const module = await import("@/app/OrdinaryAgentCockpitEffects");
+        return { default: module.OrdinaryAgentCockpitEffects };
+      });
+const OrdinaryAppShellBoundary =
+  import.meta.env.MODE === "local-owner"
+    ? null
+    : React.lazy(async () => {
+        const module = await import("@/app/OrdinaryAppShellBoundary");
+        return { default: module.OrdinaryAppShellBoundary };
+      });
+const OrdinaryAgentManagementDialogs =
+  import.meta.env.MODE === "local-owner"
+    ? null
+    : React.lazy(async () => {
+        const module = await import(
+          "@/features/agents/ui/AgentManagementDialogs"
+        );
+        return { default: module.AgentManagementDialogs };
+      });
+const OrdinaryRequestedAgentCreateDialogs =
+  import.meta.env.MODE === "local-owner"
+    ? null
+    : React.lazy(async () => {
+        const module = await import(
+          "@/features/agents/ui/RequestedAgentCreateDialogs"
+        );
+        return { default: module.RequestedAgentCreateDialogs };
+      });
 
 export function AppShell() {
   const localOwnerPolicy = useLocalOwnerPolicy();
+  const requestAgentCreation =
+    import.meta.env.MODE === "local-owner"
+      ? undefined
+      : () => {
+          void import("@/features/agents/openCreateAgentEvent").then(
+            ({ requestOpenCreateAgent }) => requestOpenCreateAgent(),
+          );
+        };
   useWebviewZoomShortcuts();
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
@@ -168,13 +198,6 @@ export function AppShell() {
     automaticSyncEnabled,
   );
   const deferredPubkey = startupReady ? identityQuery.data?.pubkey : undefined;
-  useLegacyAgentCockpitEffects({
-    communities: communitiesHook.communities,
-    deferredOwnerPubkey: deferredPubkey,
-    enabled: localOwnerPolicy === "inactive",
-    ownerPubkey: identityQuery.data?.pubkey,
-    relayUrl: communitiesHook.activeCommunity?.relayUrl,
-  });
   const profileQuery = useProfileQuery();
   useRelayAutoHeal();
   usePresenceSubscription();
@@ -193,11 +216,6 @@ export function AppShell() {
   const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
-  useReminderNotifications(
-    localOwnerPolicy === "inactive" ? identityQuery.data?.pubkey : undefined,
-    notificationSettings.settings,
-    channels,
-  );
   const refetchHomeFeedFromLiveSignal = React.useEffectEvent(() => {
     void homeFeedQuery.refetch();
   });
@@ -670,14 +688,19 @@ export function AppShell() {
     markChannelRead,
     selectedView,
   });
-  return (
-    <PreventSleepProvider enabled={localOwnerPolicy === "inactive"}>
-      <AppShellTrayMenu
-        channels={channels}
-        enabled={localOwnerPolicy === "inactive"}
-        goChannel={goChannel}
-        openCreateChannel={handleOpenCreateChannel}
-      />
+  const shell = (
+    <>
+      {OrdinaryAgentCockpitEffects ? (
+        <React.Suspense fallback={null}>
+          <OrdinaryAgentCockpitEffects
+            communities={communitiesHook.communities}
+            deferredOwnerPubkey={deferredPubkey}
+            enabled={localOwnerPolicy === "inactive"}
+            ownerPubkey={identityQuery.data?.pubkey}
+            relayUrl={communitiesHook.activeCommunity?.relayUrl}
+          />
+        </React.Suspense>
+      ) : null}
       <ChannelNavigationProvider channels={channels}>
         <AppShellProvider
           value={{
@@ -710,12 +733,7 @@ export function AppShell() {
             onOpenSettings: handleOpenSettings,
           }}
         >
-          <HuddleProvider enabled={localOwnerPolicy === "inactive"}>
-            <RemindMeLaterProvider
-              enabled={localOwnerPolicy === "inactive"}
-              pubkey={identityQuery.data?.pubkey}
-            >
-              <div
+          <div
                 className="buzz-huddle-shell relative h-dvh overflow-hidden overscroll-none"
                 data-huddle-open={isHuddleDrawerOpen}
               >
@@ -843,7 +861,7 @@ export function AppShell() {
                             }
                             communityControlsEnabled={communityControlsEnabled}
                             onSwitchCommunity={handleSwitchCommunity}
-                            onCreateAgent={() => requestOpenCreateAgent()}
+                            onCreateAgent={requestAgentCreation}
                             selfPresenceStatus={presenceSession.currentStatus}
                             communities={communitiesHook.communities}
                             onCreateChannel={handleCreateChannel}
@@ -926,10 +944,14 @@ export function AppShell() {
                           />
                         </div>
                       )}
-                      {localOwnerPolicy === "inactive" ? (
+                      {localOwnerPolicy === "inactive" &&
+                      OrdinaryRequestedAgentCreateDialogs &&
+                      OrdinaryAgentManagementDialogs ? (
                         <>
-                          <RequestedAgentCreateDialogs />
-                          <AgentManagementDialogs />
+                          <React.Suspense fallback={null}>
+                            <OrdinaryRequestedAgentCreateDialogs />
+                            <OrdinaryAgentManagementDialogs />
+                          </React.Suspense>
                         </>
                       ) : null}
                       {communityControlsEnabled ? (
@@ -972,24 +994,27 @@ export function AppShell() {
                   </SidebarProvider>
                 </div>
 
-                {localOwnerPolicy === "inactive" ? (
-                  <div className="absolute inset-x-0 bottom-0 z-0 h-(--buzz-huddle-drawer-height)">
-                    <AppHuddleBar
-                      onOpenThread={(channelId, messageId) => {
-                        void goChannel(channelId, {
-                          messageId,
-                          threadRootId: messageId,
-                        });
-                      }}
-                      onVisibilityChange={setIsHuddleDrawerOpen}
-                    />
-                  </div>
-                ) : null}
-              </div>
-            </RemindMeLaterProvider>
-          </HuddleProvider>
+          </div>
         </AppShellProvider>
       </ChannelNavigationProvider>
-    </PreventSleepProvider>
+    </>
+  );
+
+  return OrdinaryAppShellBoundary ? (
+    <React.Suspense fallback={null}>
+      <OrdinaryAppShellBoundary
+        channels={channels}
+        enabled={localOwnerPolicy === "inactive"}
+        goChannel={goChannel}
+        notificationSettings={notificationSettings.settings}
+        onHuddleVisibilityChange={setIsHuddleDrawerOpen}
+        openCreateChannel={handleOpenCreateChannel}
+        pubkey={identityQuery.data?.pubkey}
+      >
+        {shell}
+      </OrdinaryAppShellBoundary>
+    </React.Suspense>
+  ) : (
+    shell
   );
 }

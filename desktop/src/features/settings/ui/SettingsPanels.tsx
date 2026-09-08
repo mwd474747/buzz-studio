@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive,
@@ -29,9 +29,7 @@ import type {
   NotificationSettings,
 } from "@/features/notifications/hooks";
 import type { SoundName, SoundSlot } from "@/features/notifications/lib/sound";
-import { CommunityMembersSettingsCard } from "@/features/community-members/ui/CommunityMembersSettingsCard";
 import { CustomEmojiSettingsCard } from "@/features/custom-emoji/ui/CustomEmojiSettingsCard";
-import { LocalArchiveSettingsCard } from "@/features/local-archive/ui/LocalArchiveSettingsCard";
 import {
   setThreadViewMode,
   useThreadViewMode,
@@ -69,22 +67,19 @@ import {
   useThemePreviewVars,
   withAccentPreviewVars,
 } from "@/shared/theme/useThemePreviewVars";
-import { ChannelTemplatesSettingsCard } from "./ChannelTemplatesSettingsCard";
-import { HarnessesSettingsPanel } from "./HarnessesSettingsPanel";
-import { ExperimentalFeaturesCard } from "./ExperimentalFeaturesCard";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
-import { MeshComputeSettingsCard } from "@/features/mesh-compute/ui/MeshComputeSettingsCard";
-import { MobilePairingCard } from "./MobilePairingCard";
-import { ModerationQueueCard } from "./ModerationQueueCard";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
-import { PreventSleepSettingsCard } from "./PreventSleepSettingsCard";
-import { AgentDefaultsSettingsCard } from "./AgentDefaultsSettingsCard";
-import { HostedCommunitiesSettingsCard } from "./HostedCommunitiesSettingsCard";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
 import { ProfileSettingsCard } from "./ProfileSettingsCard";
-import { UpdateChecker } from "../UpdateChecker";
 import { SettingsSectionHeader } from "./SettingsSectionHeader";
-import { VoiceSettingsCard } from "./VoiceSettingsCard";
+
+const OrdinarySettingsSection =
+  import.meta.env.MODE === "local-owner"
+    ? null
+    : lazy(async () => {
+        const module = await import("./OrdinarySettingsSection");
+        return { default: module.OrdinarySettingsSection };
+      });
 
 export type SettingsSection =
   | "profile"
@@ -817,41 +812,27 @@ export function renderSettingsSection(
         />
       );
     case "voice":
-      return <VoiceSettingsCard />;
     case "experimental":
-      return <ExperimentalFeaturesCard />;
     case "agents":
-      return (
-        <div className="space-y-12">
-          <PreventSleepSettingsCard />
-          <HarnessesSettingsPanel />
-          <AgentDefaultsSettingsCard />
-        </div>
-      );
     case "channel-templates":
-      return <ChannelTemplatesSettingsCard />;
     case "compute":
-      return <MeshComputeSettingsCard />;
+    case "hosted-communities":
+    case "community-members":
+    case "moderation":
+    case "local-archive":
+    case "mobile":
+    case "updates":
+      return OrdinarySettingsSection ? (
+        <Suspense fallback={null}>
+          <OrdinarySettingsSection props={props} section={section} />
+        </Suspense>
+      ) : null;
     case "appearance":
       return <ThemeSettingsCard />;
     case "shortcuts":
       return <KeyboardShortcutsCard />;
-    case "hosted-communities":
-      return <HostedCommunitiesSettingsCard />;
-    case "community-members":
-      return (
-        <CommunityMembersSettingsCard currentPubkey={props.currentPubkey} />
-      );
-    case "moderation":
-      return <ModerationQueueCard />;
     case "custom-emoji":
       return <CustomEmojiSettingsCard />;
-    case "local-archive":
-      return <LocalArchiveSettingsCard />;
-    case "mobile":
-      return <MobilePairingCard currentPubkey={props.currentPubkey} />;
-    case "updates":
-      return <UpdateChecker />;
     default: {
       const exhaustiveCheck: never = section;
       return exhaustiveCheck;
