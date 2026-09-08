@@ -1,0 +1,11 @@
+Buzz Desktop local-owner worktree remote canonical (2026-09-08)
+
+Develop and push against the fork remote `mwd`, NOT `origin`.
+
+- mwd    = https://github.com/mwd474747/buzz-studio   (CORRECT fork for this work)
+- origin = https://github.com/block/buzz              (upstream; do NOT use as base)
+
+Canonical main: mwd/main
+Feature branch: cursor/buzz-desktop-local-owner-0908 (PR #4 local-owner path)
+
+Do not retarget this worktree to origin/block/buzz. Do not switch to PR #3.
