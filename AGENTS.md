@@ -77,9 +77,12 @@ scripts/              # Dev tooling
 Studio transport is the local Docker prod relay (`deploy/compose/compose.yml`)
 at `ws://localhost:3300` / NIP-29. Existing `#local-dev` owner pin
 `ea840b3e14aceac2b09619de28aedda628e79fcb120dea462ed3ccc512875971` — do not
-remint. Desktop immutable-release work stays on PR #3. ACP mention-fleet,
-pairing sidecar, dual compose / Prometheus, and federation rebuild are not
-required boot paths.
+remint. Buzz Desktop is the local-owner macOS app: compile-time local-owner
+profile, fixed owner identity admission, no remint, localhost relay only.
+Agents use Buzz via `#local-dev` family rail posts after SuperDaws approval —
+not gateway, mention workers, remint, dual compose, or federation. PR #3 is
+superseded. ACP mention-fleet, pairing sidecar, dual compose / Prometheus, and
+federation rebuild are not required boot paths.
 
 ```bash
 . ./bin/activate-hermit
