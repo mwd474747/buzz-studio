@@ -28,9 +28,7 @@ type LocalOwnerMachineOnboardingProps = {
 };
 
 /** The pinned product can only recover its existing owner identity. */
-export function MachineOnboardingFlow(
-  props: LocalOwnerMachineOnboardingProps,
-) {
+export function MachineOnboardingFlow(props: LocalOwnerMachineOnboardingProps) {
   const importOwnerIdentity = async (nsec: string, password?: string) => {
     const identity = await importIdentity(nsec, password);
     props.continueWithIdentity(identity.pubkey);

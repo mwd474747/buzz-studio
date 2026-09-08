@@ -34,7 +34,11 @@ export function OrdinaryAppShellBoundary({
   openCreateChannel,
   pubkey,
 }: OrdinaryAppShellBoundaryProps) {
-  useReminderNotifications(enabled ? pubkey : undefined, notificationSettings, channels);
+  useReminderNotifications(
+    enabled ? pubkey : undefined,
+    notificationSettings,
+    channels,
+  );
 
   return (
     <PreventSleepProvider enabled={enabled}>
