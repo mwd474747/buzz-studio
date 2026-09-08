@@ -147,7 +147,7 @@ type AppSidebarProps = {
   onRemoveCommunity: (id: string) => void;
   communityControlsEnabled?: boolean;
   legacySurfacesEnabled?: boolean;
-  onCreateAgent: () => void;
+  onCreateAgent?: () => void;
   onSelectAgents: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
