@@ -4,6 +4,7 @@ import { AlertCircle, ArrowLeft, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
 import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
+import { isSettingsSectionAllowedForLocalOwnerPolicy } from "./settingsLocalOwner";
 import {
   canManageCommunityMembers,
   shouldWarnMissingMembershipSnapshot,
@@ -75,14 +76,6 @@ const settingsNavGroups: Array<{
   },
 ];
 
-const LOCAL_OWNER_SETTINGS = new Set<SettingsSection>([
-  "profile",
-  "appearance",
-  "notifications",
-  "shortcuts",
-  "custom-emoji",
-]);
-
 function SettingsSectionButton({
   active,
   onSelect,
@@ -138,14 +131,13 @@ export function SettingsView({
   const { isMobile, open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const localOwnerPolicy = useLocalOwnerPolicy();
   const myMembershipQuery = useMyRelayMembershipLookupQuery(
-    localOwnerPolicy === "inactive",
+    localOwnerPolicy !== "active",
   );
   const featureState = useFeatureSnapshot();
   const visibleSections = React.useMemo(() => {
     return settingsSections.filter((s) => {
       if (
-        localOwnerPolicy !== "inactive" &&
-        !LOCAL_OWNER_SETTINGS.has(s.value)
+        !isSettingsSectionAllowedForLocalOwnerPolicy(localOwnerPolicy, s.value)
       ) {
         return false;
       }
