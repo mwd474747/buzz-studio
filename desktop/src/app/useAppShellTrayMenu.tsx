@@ -6,14 +6,16 @@ import { useTrayMenu } from "@/app/useTrayMenu";
 /** Keeps the ticking native tray menu outside AppShell's render cycle. */
 export function AppShellTrayMenu({
   channels,
+  enabled = true,
   goChannel,
   openCreateChannel,
 }: {
   channels: Channel[];
+  enabled?: boolean;
   goChannel: (channelId: string) => Promise<unknown>;
   openCreateChannel: () => void;
 }) {
-  if (!isMacPlatform()) return null;
+  if (!enabled || !isMacPlatform()) return null;
   return (
     <MacAppShellTrayMenu
       channels={channels}

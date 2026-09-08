@@ -73,21 +73,21 @@ export function combineObserverIngestionAgents(
  * Do not gate this hook on identity/startup readiness — that would drop
  * managed-agent observer coverage during startup.
  */
-export function useAgentObserverIngestion() {
+export function useAgentObserverIngestion(enabled = true) {
   const identityQuery = useIdentityQuery();
   const currentPubkey = identityQuery.data?.pubkey;
 
-  const managedAgentsQuery = useManagedAgentsQuery();
+  const managedAgentsQuery = useManagedAgentsQuery({ enabled });
   const managedAgents = managedAgentsQuery.data;
 
-  const relayAgentsQuery = useRelayAgentsQuery();
+  const relayAgentsQuery = useRelayAgentsQuery({ enabled });
   const relayAgentPubkeys = React.useMemo(
     () => (relayAgentsQuery.data ?? []).map((agent) => agent.pubkey),
     [relayAgentsQuery.data],
   );
 
   const profilesQuery = useUsersBatchQuery(relayAgentPubkeys, {
-    enabled: Boolean(currentPubkey) && relayAgentPubkeys.length > 0,
+    enabled: enabled && Boolean(currentPubkey) && relayAgentPubkeys.length > 0,
   });
   const profiles = profilesQuery.data?.profiles;
 
@@ -104,12 +104,12 @@ export function useAgentObserverIngestion() {
       }
     }
     return combineObserverIngestionAgents(
-      managedAgents ?? [],
-      relayAgentPubkeys,
+      enabled ? (managedAgents ?? []) : [],
+      enabled ? relayAgentPubkeys : [],
       ownerByPubkey,
       currentPubkey,
     );
-  }, [currentPubkey, managedAgents, profiles, relayAgentPubkeys]);
+  }, [currentPubkey, enabled, managedAgents, profiles, relayAgentPubkeys]);
 
   useManagedAgentObserverBridge(ingestionAgents);
   useActiveAgentTurnsBridge(ingestionAgents);

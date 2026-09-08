@@ -59,6 +59,7 @@ import type {
   RawInstallRuntimeResult,
   RuntimeFileConfigSubset,
 } from "@/shared/api/tauri";
+import type { LocalOwnerProfileSummary } from "@/shared/api/tauriLocalOwner";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 
 type TestIdentity = {
@@ -161,6 +162,8 @@ type MockHuddleSeed = {
 type E2eConfig = {
   mode?: "mock" | "relay";
   mock?: {
+    /** Compiled deployment profile returned by the native boot-policy command. */
+    localOwnerProfile?: LocalOwnerProfileSummary | null;
     ttsSettings?: {
       version: number;
       agentTextToSpeech: boolean;
@@ -425,6 +428,9 @@ type E2eConfig = {
     // When true, `get_identity` returns `locked: true` until `import_identity` is
     // called. Drives the keyring-locked screen in tests.
     identityLocked?: boolean;
+    // Native process-lifetime recovery latch. This remains true after the
+    // durable owner import until the whole app process is relaunched.
+    identityRelaunchRequired?: boolean;
     /**
      * Global agent config returned by `get_global_agent_config`. Defaults to
      * an empty config (no provider, model, or env vars) if not specified.
@@ -1337,6 +1343,7 @@ const STARTER_WELCOME_CHANNEL_NAME = "welcome-everyone";
 let mockIdentityLostCleared = false;
 // Same pattern for `mock.identityLocked`.
 let mockIdentityLockedCleared = false;
+let mockIdentityRelaunchRequired = false;
 
 // ── get_event defer/release seam ────────────────────────────────────────────
 // When `window.__BUZZ_E2E_DEFER_GET_EVENT__` is set to a target event ID,
@@ -3453,7 +3460,7 @@ function writeStoredIdentityOverride(identity: TestIdentity) {
   );
 }
 
-function importMockIdentity(nsec: string) {
+function importMockIdentity(nsec: string, expectedPubkey?: string) {
   const decoded = decode(nsec.trim());
   if (decoded.type !== "nsec") {
     throw new Error("Invalid Nostr private key.");
@@ -3461,6 +3468,11 @@ function importMockIdentity(nsec: string) {
 
   const privateKey = bytesToHex(decoded.data);
   const pubkey = getPublicKey(decoded.data);
+  if (expectedPubkey !== undefined && pubkey !== expectedPubkey) {
+    throw new Error(
+      "local-owner build requires the ratified #local-dev owner identity",
+    );
+  }
   const username = mockDisplayNames.get(pubkey) ?? "";
   const identity = {
     privateKey,
@@ -9607,6 +9619,9 @@ export function maybeInstallE2eTauriMocks() {
 
   mockClosedChannelLiveSubscription = false;
   mockWebsocketUnavailable = false;
+  mockIdentityLostCleared = false;
+  mockIdentityLockedCleared = false;
+  mockIdentityRelaunchRequired = false;
   relayWebsocketConnectAttemptStarts.length = 0;
   mockGlobalAgentConfig = config.mock?.globalAgentConfig
     ? { ...config.mock.globalAgentConfig }
@@ -10313,16 +10328,25 @@ export function maybeInstallE2eTauriMocks() {
         const isLocked =
           !mockIdentityLockedCleared &&
           activeConfig?.mock?.identityLocked === true;
+        const relaunchRequired =
+          mockIdentityRelaunchRequired ||
+          activeConfig?.mock?.identityRelaunchRequired === true;
         if (identity) {
           return {
             pubkey: identity.pubkey,
             display_name: identity.username,
             lost: false,
             locked: false,
+            relaunch_required: relaunchRequired,
           };
         }
 
-        return { ...DEFAULT_MOCK_IDENTITY, lost: isLost, locked: isLocked };
+        return {
+          ...DEFAULT_MOCK_IDENTITY,
+          lost: isLost,
+          locked: isLocked,
+          relaunch_required: relaunchRequired,
+        };
       }
       case "sign_nostr_identity_binding": {
         const request = payload as {
@@ -10430,6 +10454,11 @@ export function maybeInstallE2eTauriMocks() {
         return "nsec1mock000000000000000000000000000000000000000000000000000000";
       }
       case "persist_current_identity": {
+        if (activeConfig?.mock?.localOwnerProfile) {
+          throw new Error(
+            "local-owner build refuses identity replacement; recover the existing #local-dev owner",
+          );
+        }
         // Persist the ephemeral key: clears only the lost flag. The locked flag
         // is cleared only by import_identity; production rejects
         // persist_current_identity when the identity is in the locked state.
@@ -10454,15 +10483,31 @@ export function maybeInstallE2eTauriMocks() {
           ) {
             throw new Error("Wrong backup password or damaged key backup.");
           }
+          const importedIdentity = importMockIdentity(
+            nsecEncode(hexToBytes(DEFAULT_REAL_IDENTITY.privateKey)),
+            activeConfig?.mock?.localOwnerProfile?.owner_pubkey,
+          );
           mockIdentityLostCleared = true;
           mockIdentityLockedCleared = true;
-          return importMockIdentity(
-            nsecEncode(hexToBytes(DEFAULT_REAL_IDENTITY.privateKey)),
-          );
+          mockIdentityRelaunchRequired =
+            activeConfig?.mock?.localOwnerProfile !== undefined;
+          return {
+            ...importedIdentity,
+            relaunch_required: mockIdentityRelaunchRequired,
+          };
         }
+        const importedIdentity = importMockIdentity(
+          input,
+          activeConfig?.mock?.localOwnerProfile?.owner_pubkey,
+        );
         mockIdentityLostCleared = true;
         mockIdentityLockedCleared = true;
-        return importMockIdentity(input);
+        mockIdentityRelaunchRequired =
+          activeConfig?.mock?.localOwnerProfile !== undefined;
+        return {
+          ...importedIdentity,
+          relaunch_required: mockIdentityRelaunchRequired,
+        };
       }
       case "validate_repos_dir":
         // The browser harness has no host filesystem to validate. Treat the
@@ -11013,6 +11058,8 @@ export function maybeInstallE2eTauriMocks() {
         return getRelayWsUrl(activeConfig);
       case "auto_connect_default_relay_enabled":
         return activeConfig?.autoConnectDefaultRelay ?? false;
+      case "get_local_owner_profile":
+        return activeConfig?.mock?.localOwnerProfile ?? null;
       case "get_legacy_workspace_storage":
         return {
           workspaces: null,

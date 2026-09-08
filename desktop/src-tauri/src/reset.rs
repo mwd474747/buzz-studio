@@ -37,16 +37,19 @@ pub(crate) fn sentinel_path(app_data_dir: &Path) -> PathBuf {
 /// Atomically write the sentinel file. Content is intentionally empty —
 /// existence is the signal.
 pub(crate) fn write_sentinel(app_data_dir: &Path) -> Result<(), String> {
+    crate::local_owner_profile::deny_identity_replacement("identity reset")?;
     let path = sentinel_path(app_data_dir);
     std::fs::write(&path, b"").map_err(|e| format!("write sentinel {}: {e}", path.display()))
 }
 
 /// Return `true` when the sentinel file exists.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn check_sentinel(app_data_dir: &Path) -> bool {
     sentinel_path(app_data_dir).exists()
 }
 
 /// Remove the sentinel file. A missing file is not an error.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn delete_sentinel(app_data_dir: &Path) -> Result<(), String> {
     let path = sentinel_path(app_data_dir);
     match std::fs::remove_file(&path) {
@@ -60,6 +63,7 @@ pub(crate) fn delete_sentinel(app_data_dir: &Path) -> Result<(), String> {
 
 /// Keychain operations needed by the boot-time reset.
 /// Implemented for `SecretStore`; a fake is used in tests.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) trait ResetKeychain {
     /// Delete the blob + all per-key legacy entries.
     fn delete_all_with_legacy(&self) -> Result<(), String>;
@@ -68,6 +72,7 @@ pub(crate) trait ResetKeychain {
     fn verify_fully_wiped(&self) -> bool;
 }
 
+#[cfg(not(feature = "local-owner-profile"))]
 impl ResetKeychain for crate::secret_store::SecretStore {
     fn delete_all_with_legacy(&self) -> Result<(), String> {
         self.delete_all_with_legacy_cleanup()
@@ -82,6 +87,7 @@ impl ResetKeychain for crate::secret_store::SecretStore {
 
 /// Outcome of the boot-time reset check.
 #[derive(Debug, Default)]
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) struct ResetOutcome {
     /// Wipe completed successfully this boot — suppress nest migrations.
     pub completed: bool,
@@ -92,6 +98,7 @@ pub(crate) struct ResetOutcome {
 // ── Boot-time reset ───────────────────────────────────────────────────────────
 
 /// Wipe parameters assembled by `lib.rs` and passed into `run_boot_reset_with_keychain`.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) struct ResetContext<'a> {
     pub app_data_dir: &'a Path,
     /// Legacy App Support dir for this build (Sprout import source). When
@@ -110,9 +117,25 @@ pub(crate) struct ResetContext<'a> {
 ///
 /// Constructs a `SecretStore` for the running build's keyring service and
 /// delegates to `run_boot_reset_with_keychain` for testable wipe logic.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn run_boot_reset(app_data_dir: &Path) -> ResetOutcome {
     if !check_sentinel(app_data_dir) {
         return ResetOutcome::default();
+    }
+    if crate::local_owner_profile::profile_active() {
+        return match delete_sentinel(app_data_dir) {
+            Ok(()) => {
+                eprintln!("buzz-desktop reset: ignored stale reset request for local-owner build");
+                ResetOutcome::default()
+            }
+            Err(error) => {
+                eprintln!("buzz-desktop reset: cannot clear stale reset request: {error}");
+                ResetOutcome {
+                    completed: false,
+                    failed: true,
+                }
+            }
+        };
     }
 
     let is_dev = app_data_dir
@@ -140,6 +163,7 @@ pub(crate) fn run_boot_reset(app_data_dir: &Path) -> ResetOutcome {
 
 /// Deterministic trash path: `<original>.reset-trash`. Unlike PID-based names,
 /// any boot can discover and clean trash from a prior crashed attempt.
+#[cfg(not(feature = "local-owner-profile"))]
 fn trash_path(original: &Path) -> PathBuf {
     original.with_file_name(format!(
         "{}.reset-trash",
@@ -153,6 +177,7 @@ fn trash_path(original: &Path) -> PathBuf {
 /// Remove an existing reset-trash directory if present (from a prior crashed
 /// attempt), then rename `src` into the deterministic trash path. Returns
 /// `Ok(trash_path)` on success.
+#[cfg(not(feature = "local-owner-profile"))]
 fn rename_to_trash(src: &Path) -> Result<PathBuf, String> {
     let dst = trash_path(src);
     // Clear prior trash before renaming so a collision doesn't fail the rename.
@@ -165,6 +190,7 @@ fn rename_to_trash(src: &Path) -> Result<PathBuf, String> {
 }
 
 /// Core wipe logic — separated for testing.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(crate) fn run_boot_reset_with_keychain(ctx: ResetContext<'_>) -> ResetOutcome {
     let app_data_dir = ctx.app_data_dir;
 
@@ -312,7 +338,7 @@ pub(crate) fn run_boot_reset_with_keychain(ctx: ResetContext<'_>) -> ResetOutcom
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "local-owner-profile")))]
 mod tests {
     use super::*;
     use std::cell::Cell;
@@ -863,5 +889,23 @@ mod tests {
         let trash_legacy = app_support.join("xyz.block.sprout.app.reset-trash");
         assert!(!trash_app.exists(), "app trash must be cleaned");
         assert!(!trash_legacy.exists(), "legacy trash must be cleaned");
+    }
+
+    #[test]
+    fn local_owner_profile_clears_stale_sentinel_without_wiping() {
+        let tmp = TempDir::new().unwrap();
+        let app_data = make_app_data(&tmp);
+        std::fs::write(app_data.join("keep.txt"), b"owner-state").unwrap();
+        write_sentinel(&app_data).unwrap();
+
+        let outcome = crate::local_owner_profile::with_test_profile_active(|| {
+            assert!(write_sentinel(&app_data).is_err());
+            run_boot_reset(&app_data)
+        });
+
+        assert!(!outcome.completed);
+        assert!(!outcome.failed);
+        assert!(app_data.join("keep.txt").exists());
+        assert!(!sentinel_path(&app_data).exists());
     }
 }

@@ -23,6 +23,7 @@ import { Input } from "@/shared/ui/input";
 import { Spinner } from "@/shared/ui/spinner";
 import { Textarea } from "@/shared/ui/textarea";
 import { PrivateKeyBackupRow } from "./PrivateKeyBackupRow";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { SettingsSectionHeader } from "./SettingsSectionHeader";
 import { SignOutSection } from "./SignOutSection";
 import { writeTextToClipboard } from "@/shared/lib/clipboard";
@@ -131,6 +132,8 @@ export function ProfileSettingsCard({
   currentPubkey,
   fallbackDisplayName,
 }: ProfileSettingsCardProps) {
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const identityControlsEnabled = localOwnerPolicy === "inactive";
   const shouldReduceMotion = useReducedMotion();
   const profileQuery = useProfileQuery();
   const updateProfileMutation = useUpdateProfileMutation();
@@ -796,7 +799,9 @@ export function ProfileSettingsCard({
                                 testId="profile-nip05"
                                 value={nip05Handle}
                               />
-                              <PrivateKeyBackupRow />
+                              {identityControlsEnabled ? (
+                                <PrivateKeyBackupRow />
+                              ) : null}
                             </div>
                           </details>
                         </div>
@@ -817,6 +822,7 @@ export function ProfileSettingsCard({
                         inert={isAvatarEditorOpen ? undefined : true}
                       >
                         <ProfileAvatarEditor
+                          animatedModeEnabled={localOwnerPolicy === "inactive"}
                           animatedPreviewContainer={animatedPreviewEl}
                           avatarUrl={avatarUrlDraft}
                           disabled={isAvatarEditorSaving}
@@ -857,7 +863,7 @@ export function ProfileSettingsCard({
         </div>
       </div>
 
-      <SignOutSection />
+      {identityControlsEnabled ? <SignOutSection /> : null}
     </section>
   );
 }

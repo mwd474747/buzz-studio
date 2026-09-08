@@ -116,7 +116,8 @@ This tree is a local-owner Buzz studio. The current path is leftover-subtracted:
 
 - **Transport:** local Docker prod relay in [`deploy/compose/`](deploy/compose/README.md) (`compose.yml` only) at `ws://localhost:3300` / NIP-29 room. Do not treat root `docker-compose.yml` or a Prometheus overlay as required.
 - **Identity:** existing `#local-dev` owner pin, full pubkey `ea840b3e14aceac2b09619de28aedda628e79fcb120dea462ed3ccc512875971` (raw digest `af3cd8c1007e504b9d0385c0090395f2a4fecef56e34fd91e66301093583637e`). Do not remint. Do not use the 8-hex prefix as identity. `pin_is_compiled` stays compiled-in.
-- **Desktop:** bundle id `xyz.block.buzz.app`. The immutable-release lane is PR #3 (`cursor/desktop-release-lane-local-dev-6319`, Stage 2 HOLD). Do not add Team ID, install, or sign from this tree. Vite is not truth. `just release-desktop` / `scripts/desktop_release.py` stay the only packager.
+- **Desktop:** one local-owner macOS path. Compile-time `local-owner-profile`, fixed `#local-dev` owner admission, no remint, loopback/localhost relay only (`ws://localhost:3300`). The local-owner artifact excludes agent/voice/mesh/archive/updater/opener/deep-link. Do not require `127.0.0.1`. PR #3 (`cursor/desktop-release-lane-local-dev-6319`) is the superseded oversized release-publication approach — do not merge it.
+- **Agents:** use Buzz via `#local-dev` family rail posts after Mike's SuperDaws approval. Not gateway, not mention workers, not remint, not dual compose, not federation.
 - **Not this path:** writer / foundry / ACP mention-fleet as required boot; pairing-code / phone-pair sidecar; dual compose / Prometheus / A-01E activation; a second packager; federation rebuild inside Buzz; unsigned `live/` as production.
 
 ### I want to build & run from source

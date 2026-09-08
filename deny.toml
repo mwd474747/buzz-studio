@@ -15,6 +15,10 @@ ignore = [
     # remove these when upstream catches up.
     { id = "RUSTSEC-2026-0194", reason = "transitive via rust-s3 and mesh-llm→plist; trusted-input XML only; no upstream fix available yet" },
     { id = "RUSTSEC-2026-0195", reason = "transitive via rust-s3 and mesh-llm→plist; trusted-input XML only; no upstream fix available yet" },
+    # nostr-relay-pool 0.44.3 has the 0231/0232 patches but the crate itself is
+    # unmaintained. The 0.45 nostr-sdk migration is pairing-adjacent leftover
+    # and is not in this local-owner Desktop path.
+    { id = "RUSTSEC-2026-0243", reason = "nostr-relay-pool unmaintained; stay on patched 0.44.3 until a non-pairing 0.45 cut" },
 ]
 
 [licenses]

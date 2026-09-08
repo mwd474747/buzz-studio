@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Bot, Download, Loader2, Users } from "lucide-react";
 
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { invokeTauri } from "@/shared/api/tauri";
 import { fetchSnapshotBytes } from "@/shared/api/tauriMedia";
 import { cn } from "@/shared/lib/cn";
@@ -67,6 +68,7 @@ export function AgentSnapshotCard({
   thumb,
   onImport,
 }: AgentSnapshotCardProps) {
+  const importEnabled = useLocalOwnerPolicy() === "inactive";
   const [importState, setImportState] = React.useState<ImportState>({
     phase: "idle",
   });
@@ -192,22 +194,28 @@ export function AgentSnapshotCard({
         >
           <Download />
         </AttachmentAction>
-        <AttachmentAction
-          className="text-primary-foreground shadow-none hover:bg-primary/90 hover:text-primary-foreground hover:shadow-none"
-          data-testid="agent-snapshot-card-import"
-          disabled={isFetching}
-          onClick={handleImport}
-          size="sm"
-          type="button"
-          variant="default"
-        >
-          {isFetching ? <Loader2 className="animate-spin" /> : <SnapshotIcon />}
-          {isFetching
-            ? "Loading…"
-            : snapshotKind === "team"
-              ? "Add team"
-              : "Add agent"}
-        </AttachmentAction>
+        {importEnabled ? (
+          <AttachmentAction
+            className="text-primary-foreground shadow-none hover:bg-primary/90 hover:text-primary-foreground hover:shadow-none"
+            data-testid="agent-snapshot-card-import"
+            disabled={isFetching}
+            onClick={handleImport}
+            size="sm"
+            type="button"
+            variant="default"
+          >
+            {isFetching ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <SnapshotIcon />
+            )}
+            {isFetching
+              ? "Loading…"
+              : snapshotKind === "team"
+                ? "Add team"
+                : "Add agent"}
+          </AttachmentAction>
+        ) : null}
       </AttachmentActions>
     </Attachment>
   );

@@ -34,6 +34,7 @@ type InboxFilterMenuProps = {
   filter: InboxFilter;
   onFilterChange: (value: InboxFilter) => void;
   reminderCount: number;
+  remindersEnabled?: boolean;
 };
 
 export function InboxFilterMenu({
@@ -42,6 +43,7 @@ export function InboxFilterMenu({
   filter,
   onFilterChange,
   reminderCount,
+  remindersEnabled = true,
 }: InboxFilterMenuProps) {
   const activeFilter = INBOX_FILTER_OPTIONS.find(
     (option) => option.value === filter,
@@ -71,7 +73,9 @@ export function InboxFilterMenu({
           onValueChange={(value) => onFilterChange(value as InboxFilter)}
           value={filter}
         >
-          {INBOX_FILTER_OPTIONS.map((option) => (
+          {INBOX_FILTER_OPTIONS.filter(
+            (option) => remindersEnabled || option.value !== "reminders",
+          ).map((option) => (
             <div key={option.value}>
               {option.value === "reminders" ? (
                 <DropdownMenuSeparator className="my-2 bg-border/60" />

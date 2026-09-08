@@ -10,6 +10,7 @@ import { resolveSentDraftKey } from "@/features/messages/ui/draftSubmitKey";
 import { useEmojiAutocomplete } from "@/features/messages/lib/useEmojiAutocomplete";
 import type { EmojiSuggestion } from "@/features/messages/lib/useEmojiAutocomplete";
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
   buildOutgoingMessage,
@@ -110,12 +111,16 @@ function MessageComposerImpl({
   }, []);
 
   const drafts = useDrafts();
+  const legacyAgentFeaturesEnabled = useLocalOwnerPolicy() === "inactive";
   const identityQuery = useIdentityQuery();
   const effectiveDraftKey = draftKey ?? channelId;
   const ownerPubkey = identityQuery.data?.pubkey ?? null;
   const audienceThreadRootId = audienceContext?.threadRootId ?? null;
   const audienceScope =
-    audienceThreadRootId && channelId && ownerPubkey
+    legacyAgentFeaturesEnabled &&
+    audienceThreadRootId &&
+    channelId &&
+    ownerPubkey
       ? getPersistentAgentAudienceScope({
           ownerPubkey,
           channelId,
@@ -641,17 +646,6 @@ function MessageComposerImpl({
   ]);
   submitMessageRef.current = submitMessage;
 
-  // ── Auto-submit on draft send ────────────────────────────────────────────
-  // When `autoSubmitDraftKey` is set (the user clicked "Send message" in the
-  // Drafts panel and confirmed), fire `submitMessage` once after mount so the
-  // draft is sent through the real send path (mention resolution, media, etc.).
-  //
-  // Guard: only fire when the effective draft key matches the trigger so a
-  // stale URL param on a different channel never fires a spurious send.
-  //
-  // Fires at most once per mount (empty dep array after the key check) — the
-  // `onAutoSubmitComplete` callback clears the trigger before `submitMessage`
-  // runs, preventing re-fire on re-render or back-navigation.
   const onAutoSubmitCompleteRef = React.useRef(onAutoSubmitComplete);
   onAutoSubmitCompleteRef.current = onAutoSubmitComplete;
 
@@ -686,11 +680,6 @@ function MessageComposerImpl({
     [submitMessage],
   );
 
-  // ── Keyboard handling ───────────────────────────────────────────────
-  // Tiptap handles formatting shortcuts (⌘B, ⌘I, etc.) natively.
-  // Plain Enter → submit is now handled inside the Tiptap `submitOnEnter`
-  // extension (fires before ProseMirror's splitBlock). This wrapper only
-  // handles autocomplete arrow/enter keys and Escape for edit mode.
   const handleEditorKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       // Let autocomplete handle keys first
@@ -798,8 +787,10 @@ function MessageComposerImpl({
             return true;
           }
 
-          // Restore Buzz snapshots before normal styled-HTML normalization.
-          if (handleAgentSnapshotPaste(event, media.setPendingImeta))
+          if (
+            legacyAgentFeaturesEnabled &&
+            handleAgentSnapshotPaste(event, media.setPendingImeta)
+          )
             return true;
           // Strip mention/channel wrappers that Tiptap would misread as bold.
           const html = event.clipboardData?.getData("text/html");
@@ -819,7 +810,12 @@ function MessageComposerImpl({
         },
       },
     });
-  }, [media.setPendingImeta, richText.editor, scrollComposerToBottom]);
+  }, [
+    legacyAgentFeaturesEnabled,
+    media.setPendingImeta,
+    richText.editor,
+    scrollComposerToBottom,
+  ]);
 
   // ── Send button state ───────────────────────────────────────────────
   const sendDisabled = React.useMemo(

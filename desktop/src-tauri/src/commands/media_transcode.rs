@@ -5,12 +5,14 @@
 //! video to H.264/AAC/MP4/fast-start (guaranteed to pass the relay's
 //! `validate_video_file()`) and to produce a JPEG poster frame.
 
+#[cfg(not(feature = "local-owner-profile"))]
 use crate::managed_agents::resolve_command;
 
 /// Build an ffmpeg command without inheriting user-controlled process knobs.
 ///
 /// The binary path is resolved before this point, so a shell and `PATH` are not
 /// needed. Windows keeps only the OS variables required for process/DLL lookup.
+#[cfg(not(feature = "local-owner-profile"))]
 fn ffmpeg_command(path: &std::path::Path) -> std::process::Command {
     let mut command = std::process::Command::new(path);
     #[cfg(target_os = "windows")]
@@ -31,7 +33,9 @@ fn ffmpeg_command(path: &std::path::Path) -> std::process::Command {
 /// Locate ffmpeg using the same discovery logic as managed agents
 /// (login shell PATH, /opt/homebrew/bin, /usr/local/bin, etc.).
 /// Returns the resolved absolute path on success.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(super) fn find_ffmpeg() -> Result<std::path::PathBuf, String> {
+    crate::local_owner_profile::deny_direct_effect("external ffmpeg media transcoding")?;
     let ffmpeg_path = resolve_command("ffmpeg").ok_or_else(|| {
         "ffmpeg is required for video uploads but was not found.\n\n\
          Install it:\n  \
@@ -119,6 +123,7 @@ pub(super) fn has_heic_extension(path: &std::path::Path) -> bool {
 /// 10 minutes is generous for any reasonable video; pathological inputs
 /// (crafted to cause exponential decode time) get killed instead of
 /// blocking a Tokio worker thread indefinitely.
+#[cfg(not(feature = "local-owner-profile"))]
 const FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Run an ffmpeg command with a wall-clock timeout.
@@ -131,6 +136,7 @@ const FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 /// enough progress/diagnostic output to fill the OS pipe buffer (~64 KiB),
 /// the child blocks on write() and never exits — causing a false timeout.
 /// `-loglevel error` suppresses progress spam, keeping stderr small.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(super) fn run_ffmpeg_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
@@ -181,6 +187,7 @@ pub(super) fn run_ffmpeg_with_timeout(
 /// relay's `validate_video_file()`.
 ///
 /// Returns the path to a temp file. Caller must clean up.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(super) fn transcode_to_mp4(
     source: &std::path::Path,
     ffmpeg: &std::path::Path,
@@ -265,6 +272,7 @@ pub(super) fn transcode_to_mp4(
 /// Uses `-frames:v 1` so multi-image HEIF containers (Live Photos, bursts)
 /// yield a single still, and `-q:v 2` for high JPEG quality. Returns the path
 /// to a temp file. Caller must clean up.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(super) fn transcode_heic_to_jpeg(
     source: &std::path::Path,
     ffmpeg: &std::path::Path,
@@ -321,6 +329,7 @@ pub(super) fn transcode_heic_to_jpeg(
 ///
 /// Resolves ffmpeg, transcodes, reads the JPEG bytes, and cleans up the temp
 /// file. Mirrors `transcode_and_extract_poster` but for images (no poster).
+#[cfg(not(feature = "local-owner-profile"))]
 pub(super) fn transcode_heic_path_to_jpeg_bytes(
     source: &std::path::Path,
 ) -> Result<Vec<u8>, String> {
@@ -340,6 +349,7 @@ pub(super) fn transcode_heic_path_to_jpeg_bytes(
 ///
 /// Best-effort: returns `Err` on failure — callers should log and continue
 /// without a poster rather than failing the entire video upload.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(super) fn extract_poster_frame(
     mp4_path: &std::path::Path,
     ffmpeg: &std::path::Path,
@@ -415,6 +425,7 @@ pub(super) fn extract_poster_frame(
 ///
 /// Poster extraction is best-effort — if it fails, returns `None` for the poster
 /// and the video bytes are still valid. All temp files are cleaned up.
+#[cfg(not(feature = "local-owner-profile"))]
 pub(super) fn transcode_and_extract_poster(
     source: &std::path::Path,
 ) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
@@ -467,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn test_find_ffmpeg_runs() {
         // This test verifies the function doesn't panic.
         // It may pass or fail depending on whether ffmpeg is installed.
@@ -570,6 +582,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn test_transcode_to_mp4_drops_source_metadata() {
         let Ok(ffmpeg) = find_ffmpeg() else {
             eprintln!("skipping metadata round-trip: ffmpeg not found");
@@ -615,6 +628,7 @@ mod tests {
     /// ffmpeg doesn't fail. Generates a HEIC via ffmpeg, then transcodes it
     /// back to JPEG and asserts the output is a valid JPEG.
     #[test]
+    #[cfg(not(feature = "local-owner-profile"))]
     fn test_transcode_heic_round_trip() {
         let Ok(ffmpeg) = find_ffmpeg() else {
             eprintln!("skipping HEIC round-trip: ffmpeg not found");

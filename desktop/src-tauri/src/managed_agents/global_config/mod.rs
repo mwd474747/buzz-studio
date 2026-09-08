@@ -182,6 +182,9 @@ fn global_config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 ///
 /// Returns the default (all-empty) config if the file does not exist yet.
 pub fn load_global_agent_config(app: &AppHandle) -> Result<GlobalAgentConfig, String> {
+    if crate::local_owner_profile::profile_active() {
+        return Ok(GlobalAgentConfig::default());
+    }
     let path = global_config_path(app)?;
     if !path.exists() {
         return Ok(GlobalAgentConfig::default());

@@ -19,6 +19,10 @@ pub struct IdentityInfo {
     /// shows a "unlock the keyring and relaunch" screen. Mutually exclusive
     /// with `lost`.
     pub locked: bool,
+    /// True when recovery durably restored the pinned identity in this
+    /// process, but the clean runtime has not admitted it at boot. The
+    /// frontend must keep the relaunch screen mounted across webview reloads.
+    pub relaunch_required: bool,
     /// True when the boot-time Phase 2 reset attempted a wipe but verification
     /// failed. Identity resolution was skipped; the frontend shows a
     /// reset-failed recovery screen. The sentinel is preserved so the next
@@ -89,6 +93,7 @@ pub struct UserNoteInfo {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg(not(feature = "local-owner-profile"))]
 pub struct NoteReactionSummary {
     pub note_id: String,
     pub emoji: String,

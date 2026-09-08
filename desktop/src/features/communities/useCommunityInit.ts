@@ -9,6 +9,7 @@ import {
   autoConnectDefaultRelayEnabled,
   getDefaultRelayUrl,
 } from "@/shared/api/tauri";
+import { getLocalOwnerProfile } from "@/shared/api/tauriLocalOwner";
 import { getIdentity } from "@/shared/api/tauriIdentity";
 import { clearTrayAgentActivity } from "@/shared/api/trayMenu";
 import { getOverrides } from "@/shared/features";
@@ -33,6 +34,7 @@ import { clearMarkdownNodeCache } from "@/shared/ui/markdown/nodeCache";
 import { resetVideoPlayerState } from "@/shared/ui/videoPlayerState";
 
 import {
+  canonicalizeLocalOwnerCommunity,
   initFirstCommunity,
   shouldAutoConnectDefaultRelay,
 } from "./communityStorage";
@@ -117,11 +119,71 @@ export function useCommunityInit(
     let cancelled = false;
 
     async function init() {
+      let localOwnerProfile: Awaited<ReturnType<typeof getLocalOwnerProfile>>;
+      try {
+        localOwnerProfile = await getLocalOwnerProfile();
+      } catch {
+        if (!cancelled) {
+          setResult({
+            isReady: false,
+            needsSetup: true,
+            defaultRelayUrl: "ws://localhost:3000",
+          });
+        }
+        return;
+      }
+
+      if (localOwnerProfile) {
+        try {
+          const identity = await getIdentity();
+          if (cancelled) return;
+          if (
+            identity.lost ||
+            identity.locked ||
+            identity.pubkey !== localOwnerProfile.owner_pubkey
+          ) {
+            setResult({
+              isReady: false,
+              needsSetup: true,
+              defaultRelayUrl: localOwnerProfile.relay_ws_url,
+            });
+            return;
+          }
+          const canonical = canonicalizeLocalOwnerCommunity(
+            activeCommunity,
+            localOwnerProfile.relay_ws_url,
+            localOwnerProfile.owner_pubkey,
+          );
+          if (!canonical) {
+            setResult({
+              isReady: false,
+              needsSetup: true,
+              defaultRelayUrl: localOwnerProfile.relay_ws_url,
+            });
+            return;
+          }
+          if (canonical.changed) {
+            window.location.reload();
+            return;
+          }
+        } catch {
+          if (!cancelled) {
+            setResult({
+              isReady: false,
+              needsSetup: true,
+              defaultRelayUrl: localOwnerProfile.relay_ws_url,
+            });
+          }
+          return;
+        }
+      }
+
       if (!activeCommunity) {
         try {
-          const defaultRelayUrl = await getDefaultRelayUrl();
-          const autoConnectDefaultRelay =
-            await autoConnectDefaultRelayEnabled();
+          const [defaultRelayUrl, autoConnectDefaultRelay] = await Promise.all([
+            getDefaultRelayUrl(),
+            autoConnectDefaultRelayEnabled(),
+          ]);
 
           // Internal builds explicitly opt into treating their reviewed default
           // relay as the first community. Public builds retain community
@@ -129,7 +191,10 @@ export function useCommunityInit(
           if (
             isSharedIdentity ||
             (autoConnectDefaultRelay &&
-              shouldAutoConnectDefaultRelay(defaultRelayUrl))
+              shouldAutoConnectDefaultRelay(
+                defaultRelayUrl,
+                localOwnerProfile !== null,
+              ))
           ) {
             const identity = await getIdentity();
             if (cancelled) return;
@@ -215,7 +280,8 @@ export function useCommunityInit(
           undefined,
           activeCommunity.token,
           activeCommunity.reposDir,
-          getOverrides().agentManagedProfiles === true,
+          localOwnerProfile === null &&
+            getOverrides().agentManagedProfiles === true,
         );
       } catch (error) {
         // A bad `repos_dir` no longer reaches here — `apply_workspace` treats
@@ -283,6 +349,7 @@ export function useCommunityInit(
   }, [
     activeCommunity?.id,
     activeCommunity?.relayUrl,
+    activeCommunity?.pubkey,
     activeCommunity?.token,
     activeCommunity?.reposDir,
     isSharedIdentity,

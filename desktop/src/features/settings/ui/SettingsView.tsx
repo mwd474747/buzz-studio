@@ -3,6 +3,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { AlertCircle, ArrowLeft, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
+import { useLocalOwnerPolicy } from "@/features/onboarding/useLocalOwnerPolicy";
+import { isSettingsSectionAllowedForLocalOwnerPolicy } from "./settingsLocalOwner";
 import {
   canManageCommunityMembers,
   shouldWarnMissingMembershipSnapshot,
@@ -127,10 +129,18 @@ export function SettingsView({
   section,
 }: SettingsViewProps) {
   const { isMobile, open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
-  const myMembershipQuery = useMyRelayMembershipLookupQuery();
+  const localOwnerPolicy = useLocalOwnerPolicy();
+  const myMembershipQuery = useMyRelayMembershipLookupQuery(
+    localOwnerPolicy !== "active",
+  );
   const featureState = useFeatureSnapshot();
   const visibleSections = React.useMemo(() => {
     return settingsSections.filter((s) => {
+      if (
+        !isSettingsSectionAllowedForLocalOwnerPolicy(localOwnerPolicy, s.value)
+      ) {
+        return false;
+      }
       // Feature gate check. Manifest is preview-only — if the gate id is in
       // the manifest, it's preview and needs an opt-in; if it's not, it's
       // stable and renders unconditionally (fail-open).
@@ -147,7 +157,12 @@ export function SettingsView({
       }
       return true;
     });
-  }, [myMembershipQuery.data, featureState]);
+  }, [myMembershipQuery.data, featureState, localOwnerPolicy]);
+  const effectiveSection = visibleSections.some(
+    (entry) => entry.value === section,
+  )
+    ? section
+    : (visibleSections[0]?.value ?? "appearance");
 
   const [isLoaded, setIsLoaded] = React.useState(false);
   const [appVersion, setAppVersion] = React.useState<string | null>(null);
@@ -162,10 +177,10 @@ export function SettingsView({
   }, []);
 
   React.useEffect(() => {
-    if (!visibleSections.some((entry) => entry.value === section)) {
-      onSectionChange(visibleSections[0]?.value ?? "appearance");
+    if (effectiveSection !== section) {
+      onSectionChange(effectiveSection);
     }
-  }, [onSectionChange, section, visibleSections]);
+  }, [effectiveSection, onSectionChange, section]);
 
   React.useEffect(() => {
     if (!isMobile && !sidebarOpen) {
@@ -282,7 +297,7 @@ export function SettingsView({
                 <SidebarMenu aria-label={`${group.label} settings sections`}>
                   {group.sections.map((entry) => (
                     <SettingsSectionButton
-                      active={entry.value === section}
+                      active={entry.value === effectiveSection}
                       key={entry.value}
                       onSelect={onSectionChange}
                       section={entry}
@@ -331,9 +346,9 @@ export function SettingsView({
           >
             <div
               className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-4"
-              data-testid={`settings-panel-${section}`}
+              data-testid={`settings-panel-${effectiveSection}`}
             >
-              {renderSettingsSection(section, {
+              {renderSettingsSection(effectiveSection, {
                 currentPubkey,
                 fallbackDisplayName,
                 isUpdatingDesktopNotifications,
